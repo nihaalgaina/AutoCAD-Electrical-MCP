@@ -59,8 +59,8 @@ python start_web.py --host 127.0.0.1 --port 8080 --no-browser
 
 ```bash
 # 1. Clone
-git clone https://github.com/nihaalgaina/AUTOCAD-ELECTRICAL-MCP.git
-cd AUTOCAD-ELECTRICAL-MCP
+git clone https://github.com/nihaalgaina/AutoCAD-Electrical-MCP
+cd AutoCAD-Electrical-MCP
 
 # 2. Install dependencies
 pip install -e .
