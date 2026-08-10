@@ -26,7 +26,27 @@ from src.config import get_config
 from src.providers import get_provider
 from src.tools import drawing, drawing3d, electrical, wires, components, reports
 from src.tools import project as proj
+from src.tools import mcc_layout, mcc_blocks
 from web.backend.state import add_log, add_history
+
+# Re-use the single COM worker thread from app (imported lazily to avoid
+# circular imports; falls back to direct call if not yet available).
+def _run_tool_in_com_thread(func, params: dict, timeout: float = 120.0):
+    """Run *func(**params)* in the dedicated COM thread if available."""
+    try:
+        from web.backend.app import _run_in_com_thread
+        def _call():
+            try:
+                import pythoncom; pythoncom.CoInitialize()
+            except Exception: pass
+            return func(**params)
+        return _run_in_com_thread(_call, timeout=timeout)
+    except ImportError:
+        # app not yet imported (e.g. during tests) — fall back to direct call
+        try:
+            import pythoncom; pythoncom.CoInitialize()
+        except Exception: pass
+        return func(**params)
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +301,178 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
         "params": {},
         "category": "Reports",
     },
+    # ── MCC Layout ──────────────────────────────────────────────────────
+    "new_mcc_project": {
+        "func": mcc_layout.new_mcc_project,
+        "description": "Start a new MCC project. Both MCC_LAYOUT.dwg and MCC_UNITDATA.dwg must be open. Returns a project_id used by all subsequent MCC calls.",
+        "params": {
+            "layout_origin_x": "float (default 0.0)",
+            "layout_origin_y": "float (default 0.0)",
+            "first_unit_y":    "float (default 224.0)",
+            "unitdata_row_x":  "float (default 0.0)",
+            "unitdata_row_y":  "float (default 0.0)",
+        },
+        "category": "MCC",
+    },
+    "add_section": {
+        "func": mcc_layout.add_section,
+        "description": "Insert the next MCC section frame into MCC_LAYOUT (left-to-right automatically). Call after new_mcc_project.",
+        "params": {
+            "project_id":    "str — from new_mcc_project",
+            "section_width": "int — 400 / 500 / 600 / 800 / 1000 mm",
+            "section_id":    "str — label e.g. 'F1', 'G2'",
+            "variant":       "str or null",
+        },
+        "category": "MCC",
+    },
+    "add_unit": {
+        "func": mcc_layout.add_unit,
+        "description": "Insert a unit block into MCC_LAYOUT and a UDATALIN row into MCC_UNITDATA. Standard starters (FVNR, FEEDER, FVR) use a 400mm block + wireway; VFD/SS use full section width.",
+        "params": {
+            "project_id":    "str",
+            "section_id":    "str — parent section e.g. 'F1'",
+            "mod_height":    "float — unit height in mods e.g. 4, 6, 8, 3.5",
+            "unit_no":       "str — designator e.g. 'F1A'",
+            "qty":           "int (default 1)",
+            "drawout_fixed": "str — 'D' drawout (default) or 'F' fixed",
+            "starter_type":  "str — 'FVNR', 'FEEDER', 'FVR', 'VFD', 'SS', etc.",
+            "eemac_size":    "str — motor EEMAC size",
+            "hp_kw":         "str — motor rating e.g. '15HP'",
+            "fla":           "str — full load amps",
+            "frame":         "str — breaker frame",
+            "trip":          "str — breaker trip",
+            "contactor":     "str — contactor catalog #",
+            "coil":          "str — coil voltage",
+            "overload":      "str — overload range",
+            "drawing":       "str — schematic drawing number",
+        },
+        "category": "MCC",
+    },
+    "update_unit": {
+        "func": mcc_layout.update_unit,
+        "description": "Update one or more UDATALIN fields on an existing unit without moving it.",
+        "params": {
+            "project_id": "str",
+            "unit_no":    "str — e.g. 'F1A'",
+            "fields":     "dict — UDATALIN tag → new value e.g. {'HP/KW': '15HP', 'FLA': '20'}",
+        },
+        "category": "MCC",
+    },
+    "edit_unit": {
+        "func": mcc_layout.edit_unit,
+        "description": "Edit an existing unit in-place. Handles both field changes (UDATALIN text) and structural changes (mod_height, starter_type) which replace the CAD block and re-sync positions.",
+        "params": {
+            "project_id":   "str",
+            "unit_no":      "str — e.g. 'F1A'",
+            "mod_height":   "float | None — new height in mods, or omit to keep current",
+            "starter_type": "str | None — new starter type, or omit to keep current",
+            "hp_kw":        "str — optional",
+            "fla":          "str — optional",
+            "frame":        "str — optional",
+            "trip":         "str — optional",
+            "eemac_size":   "str — optional",
+            "contactor":    "str — optional",
+            "coil":         "str — optional",
+            "overload":     "str — optional",
+            "drawing":      "str — optional",
+            "left_amp":     "str — dual feeder left amps, optional",
+            "right_amp":    "str — dual feeder right amps, optional",
+        },
+        "category": "MCC",
+    },
+    "swap_units": {
+        "func": mcc_layout.swap_units,
+        "description": "Swap all attribute data between two units. Physical drawing positions are unchanged.",
+        "params": {
+            "project_id": "str",
+            "unit_no_a":  "str — first unit e.g. 'F1A'",
+            "unit_no_b":  "str — second unit e.g. 'F2A'",
+        },
+        "category": "MCC",
+    },
+    "move_unit": {
+        "func": mcc_layout.move_unit,
+        "description": (
+            "Move a unit to a new position within or between sections, updating both "
+            "MCC_LAYOUT and MCC_UNITDATA drawings. If the target section would overflow "
+            "24.5 mod, the bottom unit cascades to the next section automatically."
+        ),
+        "params": {
+            "project_id":        "str",
+            "unit_no":           "str — unit to move e.g. 'F1A'",
+            "target_section_id": "str — destination section e.g. 'F2'",
+            "target_index":      "int — 0-based position in target section (0 = top)",
+        },
+        "category": "MCC",
+    },
+    "bulk_add_units": {
+        "func": mcc_layout.bulk_add_units,
+        "description": (
+            "Insert many identical starters at once, creating sections as needed. "
+            "Sections are named {section_prefix}{n}. Units are lettered A/B/C within each section."
+        ),
+        "params": {
+            "project_id":             "str",
+            "count":                  "int — total starters to insert",
+            "starter_type":           "str — e.g. 'FVNR', 'VFD', '2S1W'",
+            "mod_height":             "float — mod height of each starter",
+            "section_prefix":         "str — e.g. 'F' → sections F1, F2 …",
+            "section_width":          "int — 400/500/600/800/1000 (default 500)",
+            "starting_section_number": "int | None — first section number (auto if omitted)",
+            "hp_kw":                  "str — optional motor rating",
+            "fla":                    "str — optional FLA",
+            "drawout_fixed":          "str — 'D' or 'F'",
+        },
+        "category": "MCC",
+    },
+    "remove_unit": {
+        "func": mcc_layout.remove_unit,
+        "description": (
+            "Delete a unit from the project, removing its block from MCC_LAYOUT "
+            "and blanking its row in MCC_UNITDATA. Remaining units are re-synced."
+        ),
+        "params": {
+            "project_id": "str",
+            "unit_no":    "str — unit to delete e.g. 'F1A'",
+        },
+        "category": "MCC",
+    },
+    "get_project_state": {
+        "func": mcc_layout.get_project_state,
+        "description": "Return the full current state of an MCC project: sections, units, handles, mod usage.",
+        "params": {"project_id": "str"},
+        "category": "MCC",
+    },
+    "list_projects": {
+        "func": mcc_layout.list_projects,
+        "description": "List all active in-memory MCC projects with section and unit counts.",
+        "params": {},
+        "category": "MCC",
+    },
+    "save_project": {
+        "func": mcc_layout.save_project,
+        "description": "Save an MCC project to a JSON file. Defaults to projects/<project_id>.json.",
+        "params": {
+            "project_id": "str",
+            "filepath":   "str or null — defaults to projects/<project_id>.json",
+        },
+        "category": "MCC",
+    },
+    "load_project": {
+        "func": mcc_layout.load_project,
+        "description": "Load a previously saved MCC project from a JSON file. Set reconnect=True to bind to the running AutoCAD instance.",
+        "params": {
+            "filepath":  "str — path to the .json file",
+            "reconnect": "bool (default True)",
+        },
+        "category": "MCC",
+    },
+    "list_mcc_blocks": {
+        "func": mcc_blocks.list_mcc_blocks,
+        "description": "Return all available MCC section frames and unit blocks from the block catalog.",
+        "params": {},
+        "category": "MCC",
+    },
     # ── Project ─────────────────────────────────────────────────────────
     "get_project_info": {
         "func": proj.get_project_info,
@@ -375,6 +567,21 @@ TOOL_ALIASES: dict[str, str] = {
     "get_drawing":          "get_active_drawing",
     "get_current_drawing":  "get_active_drawing",
     "current_drawing":      "get_active_drawing",
+    # MCC
+    "create_mcc_project":   "new_mcc_project",
+    "start_mcc_project":    "new_mcc_project",
+    "new_project":          "new_mcc_project",
+    "create_section":       "add_section",
+    "insert_section":       "add_section",
+    "add_mcc_section":      "add_section",
+    "insert_unit":          "add_unit",
+    "add_mcc_unit":         "add_unit",
+    "create_unit":          "add_unit",
+    "edit_unit":            "update_unit",
+    "update_mcc_unit":      "update_unit",
+    "project_state":        "get_project_state",
+    "mcc_state":            "get_project_state",
+    "get_mcc_state":        "get_project_state",
 }
 
 
@@ -481,6 +688,48 @@ _ELEC_SCHEMATIC_STEPS: list[CompoundStep] = [
 ]
 
 
+def _parse_mcc_units(msg: str) -> list[dict] | None:
+    """Parse a message containing one or more MCC unit specs.
+
+    Supported formats (mix and match, comma or newline separated):
+      "6 mod feeder F1A"
+      "4 mod FVNR called F1B"
+      "3.5 mod FVNR x2 F1C F1D"   ← x2 repeater with sequential names
+
+    Returns a list of dicts: [{mod_height, starter_type, unit_no}, ...]
+    or None if no units could be parsed.
+    """
+    # Match patterns like "6 mod feeder F1A" or "4 mod FVNR called F1B" or "3.5mod SS"
+    pattern = _re.compile(
+        r"(\d+(?:\.\d+)?)\s*mod\s+"        # mod height
+        r"(FVNR|FVR|FEEDER|VFD|SS|VVVF|SOFTSTART|DOL|STAR.?DELTA)\s*"  # type
+        r"(?:called?|named?|x\d+)?\s*"
+        r"([A-Z][A-Z0-9\-]*(?:\s+[A-Z][A-Z0-9\-]*)*)?",   # optional unit name(s)
+        _re.IGNORECASE,
+    )
+    multiplier_pattern = _re.compile(r"x\s*(\d+)", _re.IGNORECASE)
+
+    units = []
+    for m in pattern.finditer(msg):
+        mod_h  = float(m.group(1))
+        stype  = m.group(2).upper().replace("-", "").replace(" ", "")
+        names_raw = (m.group(3) or "").strip()
+
+        # Check for "x2", "x3" multiplier in the surrounding text
+        surrounding = msg[max(0, m.start()-5):m.end()+10]
+        mult_m = multiplier_pattern.search(surrounding)
+        count  = int(mult_m.group(1)) if mult_m else 1
+
+        # Split multiple names (e.g. "F1C F1D")
+        name_list = _re.findall(r"[A-Z][A-Z0-9\-]*", names_raw.upper()) if names_raw else []
+
+        for i in range(count):
+            unit_no = name_list[i] if i < len(name_list) else ""
+            units.append({"mod_height": mod_h, "starter_type": stype, "unit_no": unit_no})
+
+    return units if units else None
+
+
 def _compound_keyword_route(msg: str, mode: str) -> list[CompoundStep] | None:
     """Return a compound step list if the message maps to a multi-tool drawing.
 
@@ -490,6 +739,48 @@ def _compound_keyword_route(msg: str, mode: str) -> list[CompoundStep] | None:
     nums = _extract_numbers(msg)
     scale = (nums[0] / 100.0) if nums else 1.0
     scale = max(0.1, min(scale, 10.0))   # clamp to sensible range
+
+    # ── MCC: multi-unit insertion ─────────────────────────────────────────
+    # Trigger when message mentions "add" + "mod" + a section reference, with
+    # multiple units (comma/newline separated) or an x2/x3 multiplier.
+    if (_re.search(r"\bmod\b", low)
+            and _re.search(r"add|insert|put|draw|place", low)
+            and (low.count("mod") > 1 or _re.search(r"\bx\s*[2-9]\b", low))):
+
+        # Extract section_id from message ("to section F1", "in F1", etc.)
+        sec_m = _re.search(
+            r"(?:to|in(?:to)?|for|section)\s+(?:section\s+)?([A-Z][A-Z0-9\-]*)",
+            msg, _re.IGNORECASE,
+        )
+        section_id = sec_m.group(1).upper() if sec_m else ""
+
+        units = _parse_mcc_units(msg)
+        if units and section_id:
+            # Look up active project
+            try:
+                result = mcc_layout.list_projects()
+                projects = result.get("projects", [])
+                pid = projects[-1]["project_id"] if projects else ""
+            except Exception:
+                pid = ""
+
+            if pid:
+                steps: list[CompoundStep] = []
+                for u in units:
+                    label = f"{u['mod_height']} mod {u['starter_type']} {u['unit_no']}".strip()
+                    steps.append({
+                        "tool": "add_unit",
+                        "params": {
+                            "project_id":    pid,
+                            "section_id":    section_id,
+                            "unit_no":       u["unit_no"],
+                            "mod_height":    u["mod_height"],
+                            "starter_type":  u["starter_type"],
+                        },
+                        "label": label,
+                    })
+                if steps:
+                    return steps
 
     # ── Screw / tornillo / bolt ───────────────────────────────────────────
     if _re.search(r"tornillo|screw|bolt|perno", low):
@@ -548,13 +839,8 @@ async def _execute_compound(
 
         # ── Execute ───────────────────────────────────────────────────────
         try:
-            try:
-                import pythoncom
-                pythoncom.CoInitialize()
-            except Exception:
-                pass
-
-            result: dict = TOOL_REGISTRY[resolved_tool]["func"](**params)
+            func = TOOL_REGISTRY[resolved_tool]["func"]
+            result: dict = _run_tool_in_com_thread(func, params)
             ok = result.get("success", False)
             handle = result.get("handle")
             err = result.get("error")
@@ -643,6 +929,12 @@ CRITICAL RULES:
 - Coordinates are floating-point numbers in AutoCAD drawing units.
 - If coordinates are not given, use sensible defaults: origin (0,0) and size 100.
 - Output ONLY valid JSON — nothing else, no explanation, no markdown.
+- NEVER ask clarifying questions. NEVER respond with prose, lists, or tables.
+  If a request is ambiguous, pick the most reasonable tool and call it immediately.
+- For MCC work: NEVER call set_layer, draw_line, draw_rectangle or any drawing
+  primitive for section/unit requests — always use the MCC tools.
+- If the user's message implies multiple steps (e.g. "add 3 units"), call the
+  FIRST tool now and the system will prompt for subsequent steps automatically.
 {mode_examples}
 Available tools ({count} total):
 {tools_list}
@@ -676,10 +968,27 @@ EXAMPLES for Electrical mode:
 """,
     "auto": """\
 EXAMPLES:
-  "draw a line"          → {{"action":"tool_call","tool":"draw_line","params":{{"x1":0,"y1":0,"x2":100,"y2":0}}}}
-  "draw a 3D box"        → {{"action":"tool_call","tool":"draw_box","params":{{"origin_x":0,"origin_y":0,"origin_z":0,"length":100,"width":100,"height":100}}}}
-  "draw a rectangle"     → {{"action":"tool_call","tool":"draw_rectangle","params":{{"x1":0,"y1":0,"x2":100,"y2":100}}}}
-  "isometric view"       → {{"action":"tool_call","tool":"zoom_3d_view","params":{{"view_type":"SE_ISOMETRIC"}}}}
+  "draw a line"                          → {{"action":"tool_call","tool":"draw_line","params":{{"x1":0,"y1":0,"x2":100,"y2":0}}}}
+  "draw a 3D box"                        → {{"action":"tool_call","tool":"draw_box","params":{{"origin_x":0,"origin_y":0,"origin_z":0,"length":100,"width":100,"height":100}}}}
+  "draw a rectangle"                     → {{"action":"tool_call","tool":"draw_rectangle","params":{{"x1":0,"y1":0,"x2":100,"y2":100}}}}
+  "isometric view"                       → {{"action":"tool_call","tool":"zoom_3d_view","params":{{"view_type":"SE_ISOMETRIC"}}}}
+
+MCC EXAMPLES (use these exact tools — never set_layer / draw_line / draw_rectangle for MCC work):
+  "new MCC project"                          → {{"action":"tool_call","tool":"new_mcc_project","params":{{}}}}
+  "start MCC project"                        → {{"action":"tool_call","tool":"new_mcc_project","params":{{}}}}
+  "add a 500mm section called F1"            → {{"action":"tool_call","tool":"add_section","params":{{"project_id":"<id>","section_width":500,"section_id":"F1"}}}}
+  "add a 400mm section called G2"            → {{"action":"tool_call","tool":"add_section","params":{{"project_id":"<id>","section_width":400,"section_id":"G2"}}}}
+  "add a 4 mod FVNR feeder F1A to F1"       → {{"action":"tool_call","tool":"add_unit","params":{{"project_id":"<id>","section_id":"F1","unit_no":"F1A","mod_height":4,"starter_type":"FVNR"}}}}
+  "add a 6 mod feeder F1B to F1"            → {{"action":"tool_call","tool":"add_unit","params":{{"project_id":"<id>","section_id":"F1","unit_no":"F1B","mod_height":6,"starter_type":"FEEDER"}}}}
+  "add a 7 mod VFD called F1C to section F1" → {{"action":"tool_call","tool":"add_unit","params":{{"project_id":"<id>","section_id":"F1","unit_no":"F1C","mod_height":7,"starter_type":"VFD"}}}}
+  "add a 3.5 mod FVNR F1D to F1"            → {{"action":"tool_call","tool":"add_unit","params":{{"project_id":"<id>","section_id":"F1","unit_no":"F1D","mod_height":3.5,"starter_type":"FVNR"}}}}
+  "list MCC projects"                        → {{"action":"tool_call","tool":"list_projects","params":{{}}}}
+  "show project state"                       → {{"action":"tool_call","tool":"get_project_state","params":{{"project_id":"<id>"}}}}
+  "save MCC project"                         → {{"action":"tool_call","tool":"save_project","params":{{"project_id":"<id>"}}}}
+
+IMPORTANT for MCC: When the user lists multiple units (e.g. "add a 6 mod feeder, 4 mod FVNR, 4 mod FVNR"),
+call add_unit for the FIRST unit only. The user will call again for subsequent units,
+or use the /api/execute endpoint directly for multi-step sequences.
 """,
 }
 
@@ -962,6 +1271,88 @@ def _keyword_route(msg: str, mode: str) -> dict | None:
     if any(w in low for w in ["active drawing","dibujo activo","dibujo actual","cual es el dibujo","cuál es el dibujo"]):
         return {"tool": "get_active_drawing", "params": {}}
 
+    # ── MCC ──────────────────────────────────────────────────────────────
+
+    # new MCC project
+    if _re.search(r"new\s+mcc|start\s+mcc|nuevo\s+mcc|crear\s+mcc|nueva\s+mcc|iniciar\s+mcc", low):
+        return {"tool": "new_mcc_project", "params": {}}
+
+    # list MCC projects
+    if _re.search(r"list\s+(mcc\s+)?projects?|listar\s+proyectos?|show\s+projects?", low):
+        return {"tool": "list_projects", "params": {}}
+
+    # list MCC blocks
+    if _re.search(r"list\s+(mcc\s+)?blocks?|listar\s+bloques?", low):
+        return {"tool": "list_mcc_blocks", "params": {}}
+
+    # add section — e.g. "add a 500mm section called F1"
+    def _active_project_id() -> str:
+        """Return the most-recently-created MCC project_id, or '' if none."""
+        try:
+            result = mcc_layout.list_projects()
+            projects = result.get("projects", [])
+            if projects:
+                return projects[-1]["project_id"]
+        except Exception:
+            pass
+        return ""
+
+    sec_m = _re.search(
+        r"add\s+(?:a\s+)?(\d+)\s*mm\s+section\s+(?:called?|named?|labell?ed?|id)?\s*[:\"]?\s*([A-Za-z0-9_\-]+)",
+        low,
+    )
+    if sec_m:
+        width_mm = int(sec_m.group(1))
+        sec_id   = sec_m.group(2).upper()
+        pid = _active_project_id()
+        if pid:
+            return {"tool": "add_section", "params": {
+                "project_id": pid,
+                "section_width": width_mm,
+                "section_id": sec_id,
+            }}
+
+    # Also match "add section F1 500mm" or "add section 500 F1"
+    sec_m2 = _re.search(
+        r"add\s+(?:a\s+)?(?:mcc\s+)?section\s+(?:called?|named?|labell?ed?|id)?\s*[:\"]?\s*([A-Za-z0-9_\-]+)\s+(\d+)\s*mm",
+        low,
+    )
+    if sec_m2:
+        sec_id   = sec_m2.group(1).upper()
+        width_mm = int(sec_m2.group(2))
+        pid = _active_project_id()
+        if pid:
+            return {"tool": "add_section", "params": {
+                "project_id": pid,
+                "section_width": width_mm,
+                "section_id": sec_id,
+            }}
+
+    # ── Single add_unit ───────────────────────────────────────────────────
+    # "add a 4 mod FVNR called F1A to section F1"
+    # "add 6 mod feeder F1B to F1"
+    unit_m = _re.search(
+        r"add\s+(?:a\s+)?(\d+(?:\.\d+)?)\s*mod\s+"
+        r"(FVNR|FVR|FEEDER|VFD|SS|VVVF|SOFTSTART|DOL|STAR.?DELTA)\s*"
+        r"(?:called?|named?)?\s*([A-Za-z][A-Za-z0-9\-]*)\s+"
+        r"(?:to\s+(?:section\s+)?([A-Za-z][A-Za-z0-9\-]*))?",
+        msg, _re.IGNORECASE,
+    )
+    if unit_m:
+        mod_h    = float(unit_m.group(1))
+        stype    = unit_m.group(2).upper()
+        unit_no  = unit_m.group(3).upper()
+        sec_id   = (unit_m.group(4) or "").upper()
+        pid = _active_project_id()
+        if pid and sec_id:
+            return {"tool": "add_unit", "params": {
+                "project_id":   pid,
+                "section_id":   sec_id,
+                "unit_no":      unit_no,
+                "mod_height":   mod_h,
+                "starter_type": stype,
+            }}
+
     return None  # Fall through to LLM
 
 
@@ -1030,13 +1421,8 @@ async def process_message(
         params = kw_route["params"]
         add_log("INFO", f"⚡ [keyword] {tool_name}({json.dumps(params)})", "autocad")
         try:
-            try:
-                import pythoncom
-                pythoncom.CoInitialize()
-            except Exception:
-                pass
             func = TOOL_REGISTRY[tool_name]["func"]
-            result: dict = func(**params)
+            result: dict = _run_tool_in_com_thread(func, params)
         except Exception as exc:
             msg = f"Excepción al ejecutar {tool_name}: {exc}"
             add_log("ERROR", msg + "\n" + traceback.format_exc(), "autocad")
@@ -1177,14 +1563,8 @@ async def process_message(
                 "autocad")
 
         try:
-            try:
-                import pythoncom
-                pythoncom.CoInitialize()
-            except Exception:
-                pass
-
             func = TOOL_REGISTRY[tool_name]["func"]
-            result: dict = func(**params)
+            result: dict = _run_tool_in_com_thread(func, params)
         except Exception as exc:
             msg = f"Excepción al ejecutar {tool_name}: {exc}"
             add_log("ERROR", msg + "\n" + traceback.format_exc(), "autocad")

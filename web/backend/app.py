@@ -57,6 +57,39 @@ from src.tools.project import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# COM thread executor
+# ---------------------------------------------------------------------------
+# AutoCAD COM objects are STA (Single Threaded Apartment) bound to the thread
+# that created them. FastAPI runs sync endpoints in a thread pool where each
+# request can land on a different worker thread, causing RPC_E_WRONG_THREAD
+# (-2147417842) when stored COM objects are accessed from the wrong thread.
+#
+# Solution: all COM tool calls are serialised through a single dedicated
+# worker thread.  COM is initialised once in that thread and all MCC project
+# state (which holds live COM references) is created and accessed there.
+# ---------------------------------------------------------------------------
+import concurrent.futures as _cf
+
+def _com_thread_init():
+    """Initialise COM in the dedicated COM worker thread."""
+    try:
+        import pythoncom
+        pythoncom.CoInitialize()
+    except Exception:
+        pass
+
+_COM_EXECUTOR = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="com-worker")
+# Eagerly initialise COM in the worker thread so the first call isn't delayed.
+_COM_EXECUTOR.submit(_com_thread_init).result(timeout=5)
+
+
+def _run_in_com_thread(fn, *args, timeout: float = 120.0, **kwargs):
+    """Submit *fn* to the COM thread and return its result (blocking)."""
+    future = _COM_EXECUTOR.submit(fn, *args, **kwargs)
+    return future.result(timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
@@ -426,15 +459,28 @@ def execute_tool(req: ToolRequest) -> dict[str, Any]:
 
     add_log("INFO", f"Direct execute: {req.tool}({req.params})", "tool")
 
-    try:
+    info = TOOL_REGISTRY[req.tool]
+    func = info["func"]
+    category = info.get("category", "")
+
+    def _call():
+        # COM must be initialised in whichever thread runs the call.
         try:
             import pythoncom
             pythoncom.CoInitialize()
         except Exception:
             pass
+        return func(**req.params)
 
-        func = TOOL_REGISTRY[req.tool]["func"]
-        result: dict = func(**req.params)
+    try:
+        # All AutoCAD / MCC tools run in the dedicated COM thread to avoid
+        # RPC_E_WRONG_THREAD when stored STA COM objects are accessed from a
+        # different FastAPI worker thread.
+        if category in ("MCC", "Drawing", "Drawing3D", "Electrical",
+                        "Wires", "Components", "Reports", "Project"):
+            result: dict = _run_in_com_thread(_call, timeout=120.0)
+        else:
+            result = _call()
 
         if result.get("success"):
             add_log("INFO", f"✓ {req.tool} OK", "tool")
@@ -442,6 +488,10 @@ def execute_tool(req: ToolRequest) -> dict[str, Any]:
             add_log("WARN", f"✗ {req.tool}: {result.get('error')}", "tool")
 
         return result
+    except _cf.TimeoutError:
+        msg = f"Tool '{req.tool}' timed out (>120 s) — AutoCAD may be busy."
+        add_log("ERROR", msg, "tool")
+        raise HTTPException(status_code=504, detail=msg)
     except Exception as exc:
         add_log("ERROR", f"✗ {req.tool} exception: {exc}", "tool")
         raise HTTPException(status_code=500, detail=str(exc))

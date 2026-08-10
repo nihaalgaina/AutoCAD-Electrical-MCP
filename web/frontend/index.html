@@ -123,6 +123,18 @@
       </span>
       <span class="nav-label" data-i18n="nav.drawings">Drawings</span>
     </button>
+    <button class="nav-btn" data-panel="mcc">
+      <span class="nav-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="3" width="20" height="18" rx="2"/>
+          <line x1="8" y1="3" x2="8" y2="21"/>
+          <line x1="16" y1="3" x2="16" y2="21"/>
+          <line x1="2" y1="9" x2="8" y2="9"/>
+          <line x1="2" y1="15" x2="8" y2="15"/>
+        </svg>
+      </span>
+      <span class="nav-label">MCC</span>
+    </button>
     <button class="nav-btn" data-panel="logs">
       <span class="nav-icon">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -277,6 +289,60 @@
       </div>
     </section>
 
+    <!-- ┌─ PANEL: MCC BUILDER ──────────────────────────────────────────┐ -->
+    <section class="panel" id="panel-mcc">
+
+      <!-- Toolbar -->
+      <div class="panel-header">
+        <h2>MCC Builder</h2>
+        <div class="panel-actions mcc-toolbar">
+          <select class="select-sm" id="mcc-project-select" title="Active MCC project">
+            <option value="">— no project —</option>
+          </select>
+          <button class="btn-primary btn-sm-primary" id="btn-new-mcc-project" title="New MCC Project">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            New Project
+          </button>
+          <button class="btn-sm" id="btn-add-mcc-section" title="Add Section">+ Section</button>
+          <button class="btn-sm" id="btn-bulk-add-units"  title="Bulk add starters">Bulk Add</button>
+          <button class="btn-sm" id="btn-save-mcc"        title="Save project to JSON">Save</button>
+          <button class="btn-icon" id="btn-refresh-mcc"   title="Refresh diagram">↻</button>
+        </div>
+      </div>
+
+      <!-- Main area: diagram + slide-in form -->
+      <div class="mcc-workspace">
+
+        <!-- Diagram canvas (scrolls horizontally) -->
+        <div class="mcc-canvas-wrap">
+          <div class="mcc-canvas" id="mcc-canvas">
+            <div class="mcc-empty-canvas">
+              <div class="mcc-empty-icon">⬛</div>
+              <p>Click <b>New Project</b> to begin, then add sections.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Slide-in right panel for forms -->
+        <div class="mcc-rp" id="mcc-rp">
+          <div class="mcc-rp-header">
+            <span class="mcc-rp-title" id="mcc-rp-title">Details</span>
+            <button class="btn-icon mcc-rp-close" id="mcc-rp-close" title="Close">✕</button>
+          </div>
+          <div class="mcc-rp-body" id="mcc-rp-body"></div>
+        </div>
+
+      </div>
+
+      <!-- Status bar -->
+      <div class="mcc-statusbar" id="mcc-statusbar">
+        Click New Project to start. Both MCC_LAYOUT.dwg and MCC_UNITDATA.dwg must be open in AutoCAD.
+      </div>
+
+    </section>
+
     <!-- ┌─ PANEL: LOGS ─────────────────────────────────────────────────┐ -->
     <section class="panel" id="panel-logs">
       <div class="panel-header">
@@ -343,5 +409,6 @@
 <script src="/static/js/api.js"></script>
 <script src="/static/js/i18n.js"></script>
 <script src="/static/js/main.js"></script>
+<script src="/static/js/mcc.js"></script>
 </body>
 </html>

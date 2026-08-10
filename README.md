@@ -1,4 +1,4 @@
-# AUTOCAD-ELECTRICAL-MCP
+# AutoCAD Electrical MCP (ECM)
 
 > MCP server + local AI web dashboard for **AutoCAD Electrical 2025** — control AutoCAD with plain language via Claude, Ollama, or any OpenAI-compatible model.
 
@@ -7,11 +7,14 @@
 [![AutoCAD Electrical 2025](https://img.shields.io/badge/AutoCAD_Electrical-2025-red.svg)](https://www.autodesk.com/products/autocad/autocad-electrical)
 [![Ollama](https://img.shields.io/badge/Ollama-local_AI-black.svg)](https://ollama.com)
 
+> This fork was designed for **Electrical Controls Manufacturing** (ECM), aimed at adding support for their Motor Control Center (MCC) products, as well as planned support for
+variable frequency drives (VFDs), soft starters, breaker panels, and other products.
+
 ---
 
 ## Screenshots
 
-| English UI | Spanish UI |
+| English UI | Spanish UI (Not updated in this fork) |
 |:---:|:---:|
 | ![English dashboard](docs/images/ui-english.png) | ![Spanish dashboard](docs/images/ui-spanish.png) |
 

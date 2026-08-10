@@ -1,0 +1,1313 @@
+// ── MCC Builder ──────────────────────────────────────────────────────────────
+// Visual offline GUI for building MCC layouts without AI.
+// Calls /api/execute directly (no LLM involved).
+// ─────────────────────────────────────────────────────────────────────────────
+(function () {
+  'use strict';
+
+  const MOD_PX = 18;   // pixels per 1 module height in the diagram
+
+  // ── Minimum mod heights per starter type ──────────────────────────────────
+  // Change these values here to adjust the enforced minimums.
+  const MIN_MOD = {
+    VFD:       12,
+    VVVF:      12,
+    SS:        10,
+    SOFTSTART: 10,
+  };
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  let _projectId    = null;
+  let _projectState = null;
+  let _busy         = false;
+
+  // ── API ───────────────────────────────────────────────────────────────────
+  async function exec(tool, params = {}) {
+    const res = await fetch('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool, params }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }
+
+  // ── Unit type colours ─────────────────────────────────────────────────────
+  const TYPE_COLOR = {
+    FEEDER:      '#3b82f6',
+    DUALFEEDER:  '#0ea5e9',
+    FVNR:        '#10b981',
+    FVR:         '#6366f1',
+    '2S2W':      '#14b8a6',
+    '2S1W':      '#0891b2',
+    VFD:         '#f59e0b',
+    VVVF:        '#f59e0b',
+    SS:          '#ef4444',
+    SOFTSTART:   '#ef4444',
+    STARDELTATR: '#8b5cf6',
+    CUSTOM:      '#a78bfa',   // purple — custom/special units
+    SPACE:       '#3f4f68',
+  };
+  function typeColor(t) {
+    // Strip digits and non-alpha so e.g. "DUAL_FEEDER" → "DUALFEEDER", "2S2W" → "SW"
+    return TYPE_COLOR[(t || '').toUpperCase().replace(/[^A-Z]/g, '')] || '#64748b';
+  }
+
+  // ── Status bar helper ─────────────────────────────────────────────────────
+  function setStatus(msg, isError = false) {
+    const el = document.getElementById('mcc-statusbar');
+    if (!el) return;
+    el.textContent = msg;
+    el.className = 'mcc-statusbar' + (isError ? ' mcc-statusbar-error' : '');
+  }
+
+  // ── Friendly error messages ───────────────────────────────────────────────
+  // Maps common backend error strings to actionable guidance shown in the UI.
+  function _friendlyError(raw) {
+    if (!raw) return 'Unknown error.';
+    const r = raw.toLowerCase();
+    if (r.includes('cannot connect to autocad') || r.includes('autocad not running'))
+      return '⚠ AutoCAD is not running. Start AutoCAD Electrical, then try again.';
+    if (r.includes('not open in autocad') || r.includes('.dwg is not open'))
+      return `⚠ ${raw}`;   // already human-readable from Python
+    if (r.includes('block file not found') || r.includes('section block file not found'))
+      return `⚠ ${raw}`;   // already includes the searched-paths hint
+    if (r.includes('mcc_block_library'))
+      return `⚠ Block library not configured. Set MCC_BLOCK_LIBRARY in your .env file.`;
+    return raw;
+  }
+
+  // ── Right-panel form helpers ───────────────────────────────────────────────
+  function showRp(title, html) {
+    document.getElementById('mcc-rp-title').textContent = title;
+    document.getElementById('mcc-rp-body').innerHTML = html;
+    document.getElementById('mcc-rp').classList.add('mcc-rp-open');
+  }
+  function hideRp() {
+    document.getElementById('mcc-rp').classList.remove('mcc-rp-open');
+  }
+
+  // ── Render MCC diagram ────────────────────────────────────────────────────
+  function renderDiagram(state) {
+    const canvas = document.getElementById('mcc-canvas');
+    if (!canvas) return;
+    canvas.innerHTML = '';
+
+    // Allow drops anywhere on the canvas so the cursor never shows "not allowed"
+    canvas.addEventListener('dragover', e => { if (_drag) e.preventDefault(); });
+    canvas.addEventListener('dragleave', () => {
+      // Clear any stale active drop zone when cursor leaves the canvas
+      document.querySelectorAll('.mcc-dz-active').forEach(z => z.classList.remove('mcc-dz-active'));
+    });
+
+    if (!state || !state.sections || Object.keys(state.sections).length === 0) {
+      canvas.innerHTML = `
+        <div class="mcc-empty-canvas">
+          <div class="mcc-empty-icon">⬛</div>
+          <p>No sections yet.</p>
+          <button class="btn-primary" id="mcc-empty-add-sec">＋ Add First Section</button>
+        </div>`;
+      document.getElementById('mcc-empty-add-sec')
+              ?.addEventListener('click', openAddSectionForm);
+      return;
+    }
+
+    for (const [secId, sec] of Object.entries(state.sections)) {
+      canvas.appendChild(buildSectionCol(secId, sec));
+    }
+
+    // Ghost "add section" column
+    const ghost = document.createElement('div');
+    ghost.className = 'mcc-col mcc-col-ghost';
+    ghost.innerHTML = `<div class="mcc-ghost-inner">＋<br><small>Add Section</small></div>`;
+    ghost.addEventListener('click', openAddSectionForm);
+    canvas.appendChild(ghost);
+  }
+
+  // ── Drag-and-drop state ───────────────────────────────────────────────────
+  let _drag = null;   // { unit_no, from_section } while a drag is in flight
+
+  function _makeDz(secId, index) {
+    const dz = document.createElement('div');
+    dz.className = 'mcc-drop-zone';
+    dz.dataset.sec   = secId;
+    dz.dataset.index = index;
+    dz.addEventListener('dragover',  e => { if (!_drag) return; e.preventDefault(); dz.classList.add('mcc-dz-active'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('mcc-dz-active'));
+    dz.addEventListener('drop',      e => { e.preventDefault(); dz.classList.remove('mcc-dz-active'); _commitMove(secId, index); });
+    return dz;
+  }
+
+  async function _commitMove(toSec, toIdx) {
+    if (!_drag || !_projectId) return;
+    const { unit_no } = _drag;
+    _drag = null;
+    document.getElementById('mcc-canvas')?.classList.remove('mcc-dragging');
+    if (_busy) return;
+    setBusy(true);
+    try {
+      const res = await exec('move_unit', {
+        project_id:        _projectId,
+        unit_no,
+        target_section_id: toSec,
+        target_index:      toIdx,
+      });
+      if (res.success) {
+        if (res.moved === false) {
+          setStatus('No change.');
+        } else {
+          let msg = `Moved ${unit_no} → ${toSec}`;
+          if (res.cascaded?.length) {
+            msg += ' | cascaded: ' + res.cascaded.map(c => `${c.unit_no} → ${c.to_section}`).join(', ');
+          }
+          setStatus(msg);
+        }
+        await refreshState();
+      } else {
+        setStatus((res.overflow_warning ? '⚠ ' : '✗ ') + (res.error ?? 'Move failed.'), true);
+      }
+    } catch (err) {
+      setStatus('✗ ' + err.message, true);
+    } finally { setBusy(false); }
+  }
+
+  function buildSectionCol(secId, sec) {
+    const capacity  = sec.capacity_mods  ?? 24.5;
+    const used      = sec.used_mods      ?? 0;
+    const remaining = sec.remaining_mods ?? (capacity - used);
+    const widthMM   = sec.section_width  ?? 500;
+    const pct       = Math.min(100, (used / capacity) * 100).toFixed(0);
+    const units     = sec.units ?? [];
+
+    const col = document.createElement('div');
+    col.className   = 'mcc-col';
+    col.dataset.sec = secId;
+
+    col.innerHTML = `
+      <div class="mcc-col-header">
+        <span class="mcc-col-id">${secId}</span>
+        <span class="mcc-col-mm">${widthMM}mm</span>
+      </div>
+      <div class="mcc-col-progress">
+        <div class="mcc-col-bar">
+          <div class="mcc-col-bar-fill" style="width:${pct}%"
+               title="${used} / ${capacity} mod used"></div>
+        </div>
+        <span class="mcc-col-pct">${used}/${capacity}</span>
+      </div>
+      <div class="mcc-col-units" id="mcc-units-${secId}"></div>
+    `;
+
+    const unitsDiv = col.querySelector('.mcc-col-units');
+
+    // Drop zone above unit[0]
+    unitsDiv.appendChild(_makeDz(secId, 0));
+
+    units.forEach((unit, i) => {
+      unitsDiv.appendChild(buildUnitBlock(unit, secId));
+      unitsDiv.appendChild(_makeDz(secId, i + 1));
+    });
+
+    // Empty slot — also a drop target for "drop at bottom"
+    if (remaining > 0.1) {
+      const slot = document.createElement('div');
+      slot.className    = 'mcc-unit-empty';
+      slot.style.height = (remaining * MOD_PX) + 'px';
+      slot.innerHTML    = `<span>＋ ${remaining.toFixed(1)} mod free</span>`;
+      slot.addEventListener('click',     () => openAddUnitForm(secId));
+      slot.addEventListener('dragover',  e  => { if (!_drag) return; e.preventDefault(); slot.classList.add('mcc-dz-active'); });
+      slot.addEventListener('dragleave', ()  => slot.classList.remove('mcc-dz-active'));
+      slot.addEventListener('drop',      e  => { e.preventDefault(); slot.classList.remove('mcc-dz-active'); _commitMove(secId, units.length); });
+      unitsDiv.appendChild(slot);
+    }
+
+    return col;
+  }
+
+  function buildUnitBlock(unit, secId) {
+    const rawType   = unit.fields?.TYPE || unit.fields?.STARTER || unit.starter_type || '';
+    const col       = typeColor(rawType);
+    // If a custom tag was set, show it as the label; otherwise show the type name.
+    const typeLabel = (unit.tag && unit.tag.trim()) ? unit.tag.trim() : rawType;
+    const h       = (unit.mod_height ?? 4) * MOD_PX;
+
+    const el = document.createElement('div');
+    el.className         = 'mcc-unit-block';
+    el.style.height      = h + 'px';
+    el.draggable         = true;
+    el.dataset.unitNo    = unit.unit_no;
+    el.dataset.secId     = secId;
+
+    const isDual = (unit.starter_type ?? '').toUpperCase() === 'DUAL_FEEDER';
+    const unitLabel = (unit.unit_no ?? '').startsWith('_SPACE_') ? '' : (unit.unit_no ?? '');
+
+    // For dual feeders show L / R sub-unit info side-by-side
+    const bodyInner = isDual ? `
+        <div class="mcc-unit-tag" style="color:${col}">DUAL FEEDER</div>
+        <div class="mcc-unit-dual-row">
+          <div class="mcc-unit-dual-cell">
+            <div class="mcc-unit-no">${unit.left_unit_no ?? unitLabel + 'L'}</div>
+            <div class="mcc-unit-meta">${unit.left_amp ? unit.left_amp + 'A' : '—'}</div>
+          </div>
+          <div class="mcc-unit-dual-sep">|</div>
+          <div class="mcc-unit-dual-cell">
+            <div class="mcc-unit-no">${unit.right_unit_no ?? unitLabel + 'R'}</div>
+            <div class="mcc-unit-meta">${unit.right_amp ? unit.right_amp + 'A' : '—'}</div>
+          </div>
+        </div>
+        <div class="mcc-unit-meta">${unit.mod_height} mod</div>
+    ` : `
+        <div class="mcc-unit-tag" style="color:${col}">${typeLabel || '—'}</div>
+        <div class="mcc-unit-no">${unitLabel}</div>
+        <div class="mcc-unit-desc">${unit.fields?.DESCRIPTION1 || ''}</div>
+        <div class="mcc-unit-meta">
+          ${unit.mod_height} mod
+          ${unit.fields?.['HP/KW'] ? '· ' + unit.fields['HP/KW'] : ''}
+          ${unit.fields?.FLA       ? '· ' + unit.fields.FLA + 'A' : ''}
+        </div>
+    `;
+
+    el.innerHTML = `
+      <div class="mcc-unit-stripe" style="background:${col}"></div>
+      <div class="mcc-unit-body">${bodyInner}</div>
+      <div class="mcc-unit-delete-btn" title="Delete unit">✕</div>
+      <div class="mcc-unit-drag-handle" title="Drag to reorder">⠿</div>
+    `;
+
+    // Click on the unit body → open edit form
+    el.querySelector('.mcc-unit-body').addEventListener('click', e => {
+      e.stopPropagation();
+      openEditUnitForm(unit, secId);
+    });
+
+    // Delete button — must be wired up after innerHTML is set
+    el.querySelector('.mcc-unit-delete-btn').addEventListener('click', async e => {
+      e.stopPropagation();
+      const label = (unit.unit_no ?? '').startsWith('_SPACE_') ? 'this SPACE' : `"${unit.unit_no}"`;
+      if (!confirm(`Delete ${label} (${unit.mod_height} mod) from section ${secId}?`)) return;
+      setStatus(`Deleting ${label}…`);
+      try {
+        const r = await exec('remove_unit', { project_id: _projectId, unit_no: unit.unit_no });
+        if (r.success) {
+          setStatus(`Deleted ${label}.`);
+          await refreshState();
+        } else {
+          setStatus(`Delete failed: ${r.error}`, true);
+        }
+      } catch (err) {
+        setStatus(`Delete error: ${err}`, true);
+      }
+    });
+
+    el.addEventListener('dragstart', e => {
+      _drag = { unit_no: unit.unit_no, from_section: secId };
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', unit.unit_no);
+      document.getElementById('mcc-canvas')?.classList.add('mcc-dragging');
+      requestAnimationFrame(() => el.classList.add('mcc-unit-dragging'));
+    });
+    el.addEventListener('dragend', () => {
+      _drag = null;
+      el.classList.remove('mcc-unit-dragging');
+      document.getElementById('mcc-canvas')?.classList.remove('mcc-dragging');
+      document.querySelectorAll('.mcc-dz-active').forEach(z => z.classList.remove('mcc-dz-active'));
+    });
+    // Allow dropping on a unit block — inserts before it (highlight top drop zone)
+    el.addEventListener('dragover', e => {
+      if (!_drag || _drag.unit_no === unit.unit_no) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
+      // Highlight the drop zone immediately above this block
+      document.querySelectorAll('.mcc-dz-active').forEach(z => z.classList.remove('mcc-dz-active'));
+      const prev = el.previousElementSibling;
+      if (prev?.classList.contains('mcc-drop-zone')) prev.classList.add('mcc-dz-active');
+    });
+    el.addEventListener('drop', e => {
+      if (!_drag || _drag.unit_no === unit.unit_no) return;
+      e.preventDefault();
+      e.stopPropagation();
+      document.querySelectorAll('.mcc-dz-active').forEach(z => z.classList.remove('mcc-dz-active'));
+      // Find this unit's index inside the section unit list
+      const allBlocks = [...el.parentElement.querySelectorAll('.mcc-unit-block')];
+      const idx = allBlocks.indexOf(el);
+      _commitMove(secId, idx);   // insert before this unit
+    });
+
+    return el;
+  }
+
+  // ── Shared form helpers ────────────────────────────────────────────────────
+
+  // Canonical starter type option list (no DOL, includes 2S2W / 2S1W)
+  function _STARTER_OPTS(selected = 'FVNR') {
+    const types = [
+      ['FEEDER',       'FEEDER'],
+      ['DUAL_FEEDER',  'DUAL FEEDER (2-in-1 bucket)'],
+      ['FVNR',         'FVNR'],
+      ['FVR',          'FVR (Reversing)'],
+      ['2S2W',         '2S2W (Two-Speed 2-Winding)'],
+      ['2S1W',         '2S1W (Two-Speed 1-Winding)'],
+      ['VFD',          'VFD'],
+      ['SS',           'SS (Soft Starter)'],
+      ['CUSTOM',       'CUSTOM (PLC, panelboard, special)'],
+      ['SPACE',        'SPACE (empty slot)'],
+    ];
+    return types.map(([v, l]) =>
+      `<option value="${v}"${v === selected ? ' selected' : ''}>${l}</option>`
+    ).join('');
+  }
+
+  function _MOD_OPTS(def = 4) {
+    return [1,2,3,3.5,4,5,6,7,8,10,12,14,21].map(m =>
+      `<option value="${m}"${m === def ? ' selected' : ''}>${m} mod</option>`
+    ).join('');
+  }
+
+  // Returns HTML for all UDATALIN detail fields, namespaced with prefix p.
+  // Fields are grouped by category to keep the form scannable.
+  function _DETAIL_FIELDS(p) {
+    const row  = (label, id, placeholder = '', extra = '') =>
+      `<div class="mcc-form-row"><label>${label}</label><input id="${p}-${id}" class="form-input" placeholder="${placeholder}" ${extra}/></div>`;
+    const sel  = (label, id, opts) =>
+      `<div class="mcc-form-row"><label>${label}</label><select id="${p}-${id}" class="form-input">${opts}</select></div>`;
+    const hdr  = title =>
+      `<div class="mcc-detail-group-hdr">${title}</div>`;
+
+    return `
+      ${hdr('General')}
+      ${sel('Drawout / Fixed', 'udf', '<option value="D" selected>D – Drawout</option><option value="F">F – Fixed</option>')}
+      ${row('Qty', 'uqty', '1', 'value="1"')}
+      ${row('EEMAC Size', 'usz', 'e.g. 2')}
+
+      ${hdr('Motor')}
+      ${row('HP / kW', 'uhp', 'e.g. 15')}
+      ${row('FLA', 'ufla', 'e.g. 28.5')}
+
+      ${hdr('Protection')}
+      ${row('Frame', 'uframe', 'e.g. CD63A')}
+      ${row('Trip (A)', 'utrip', 'e.g. 63')}
+      ${row('Switch', 'uswitch', 'e.g. 63A')}
+      ${row('Fuse Type', 'uftype', 'e.g. HRC')}
+      ${row('Fuse', 'ufuse', 'e.g. 63A')}
+
+      ${hdr('Contactor / Overload')}
+      ${row('Contactor Qty', 'ucqty', 'e.g. 1')}
+      ${row('Contactor', 'ucont', 'Cat #')}
+      ${row('Coil Voltage', 'ucoil', 'e.g. 120V')}
+      ${row('OL Qty', 'uolqty', 'e.g. 1')}
+      ${row('Overload', 'uol', 'e.g. 28-40A')}
+
+      ${hdr('Control Circuit')}
+      ${row('CCT VA', 'ucct', 'VA rating')}
+      ${row('CCT Sec Fuse', 'ucctfsec', 'e.g. 2A')}
+      ${row('CCT Pri Fuse', 'ucctfpri', 'e.g. 2A')}
+      ${row('Ctrl Fuse Qty', 'ucfuseqty', 'e.g. 1')}
+      ${row('Ctrl Fuse Size', 'ucfuse', 'e.g. 2A')}
+
+      ${hdr('Pushbuttons / Selector')}
+      ${row('Stop PBs', 'ustop', 'qty')}
+      ${row('Start PBs', 'ustart', 'qty')}
+      ${row('PTC Resets', 'uptc', 'qty')}
+      ${row('Selector Positions', 'upos', 'e.g. 2')}
+      ${row('Selector Legend', 'uss', 'e.g. AUTO/OFF/HAND')}
+
+      ${hdr('Pilot Lights')}
+      ${row('Red PLs', 'uplred', 'qty')}
+      ${row('Green PLs', 'uplgrn', 'qty')}
+      ${row('Yellow PLs', 'uplylw', 'qty')}
+      ${row('White PLs', 'uplwht', 'qty')}
+
+      ${hdr('Timers')}
+      ${row('Timer Qty', 'utmrqty', 'qty')}
+      ${row('ON Delay', 'uon', 'X if used')}
+      ${row('OFF Delay', 'uoff', 'X if used')}
+
+      ${hdr('Control Relays')}
+      ${row('CR Qty', 'ucrqty', 'qty')}
+      ${row('NO Contacts', 'uno', 'qty')}
+      ${row('NC Contacts', 'unc', 'qty')}
+      ${row('PTC Aux', 'uptcaux', 'qty')}
+      ${row('Hour Meters', 'uhour', 'qty')}
+
+      ${hdr('Metering')}
+      ${row('Voltmeter Scale', 'uvm', 'e.g. 600V')}
+      ${row('Ammeter Scale', 'uam', 'e.g. 100A')}
+      ${row("CT's", 'ucts', 'qty')}
+
+      ${hdr('Transformer')}
+      ${row('Xmer Phases', 'uxmerph', 'e.g. 1')}
+      ${row('Xmer KVA', 'ukva', 'e.g. 0.5')}
+
+      ${hdr('Panel Board')}
+      ${row('Panel Phases', 'upnlph', 'e.g. 3')}
+      ${row("Panel Circuits", 'upnlcct', 'qty')}
+
+      ${hdr('Drawing')}
+      ${row('Drawing No.', 'udwg', 'Schematic dwg #')}
+
+      ${hdr('Nameplate')}
+      ${row('Line 1', 'unpl1', 'e.g. PUMP 1')}
+      ${row('Line 2', 'unpl2', 'e.g. 15 HP')}
+      ${row('Line 3', 'unpl3', '')}
+      ${row('Line 4', 'unpl4', '')}
+      ${row('NP Qty', 'unpqty', 'e.g. 1')}
+      ${row('NP Size', 'unpsz', 'e.g. 2"x4"')}
+      ${row('NP Style', 'unpstyle', 'e.g. B-1')}
+    `;
+  }
+
+  // Collect all detail field values into a params object.
+  // Keys match the Python add_unit() / bulk_add_units() parameter names.
+  function _collectDetailFields(p) {
+    const g = id => (document.getElementById(`${p}-${id}`)?.value ?? '').trim();
+    const params = {};
+    // [element-id-suffix, python-param-name, coerce-to-int?]
+    const map = [
+      ['udf',      'drawout_fixed',  false],
+      ['uqty',     'qty',            true ],
+      ['usz',      'eemac_size',     false],
+      ['uhp',      'hp_kw',          false],
+      ['ufla',     'fla',            false],
+      ['uframe',   'frame',          false],
+      ['utrip',    'trip',           false],
+      ['uswitch',  'switch',         false],
+      ['uftype',   'fuse_type',      false],
+      ['ufuse',    'fuse',           false],
+      ['ucqty',    'cont_qty',       false],
+      ['ucont',    'contactor',      false],
+      ['ucoil',    'coil',           false],
+      ['uolqty',   'ol_qty',         false],
+      ['uol',      'overload',       false],
+      // control circuit
+      ['ucct',     'CCT',            false],
+      ['ucctfsec', 'CCT-FSEC',       false],
+      ['ucctfpri', 'CCT-FPRI',       false],
+      ['ucfuseqty','CFUSE-QTY',      false],
+      ['ucfuse',   'CFUSE',          false],
+      // pushbuttons / selector
+      ['ustop',    'STOP',           false],
+      ['ustart',   'START',          false],
+      ['uptc',     'PTC',            false],
+      ['upos',     'POS',            false],
+      ['uss',      'SS',             false],
+      // pilot lights
+      ['uplred',   'PL-RED',         false],
+      ['uplgrn',   'PL-GRN',         false],
+      ['uplylw',   'PL-YEL',         false],
+      ['uplwht',   'PL-WHT',         false],
+      // timers
+      ['utmrqty',  'TMR-QTY',        false],
+      ['uon',      'ON',             false],
+      ['uoff',     'OFF',            false],
+      // control relays
+      ['ucrqty',   'CR-QTY',         false],
+      ['uno',      'NO',             false],
+      ['unc',      'NC',             false],
+      ['uptcaux',  'PTC-AUX',        false],
+      ['uhour',    'HOUR',           false],
+      // metering
+      ['uvm',      'VOLTMETER',      false],
+      ['uam',      'AMMETER',        false],
+      ['ucts',     "CT'S",           false],
+      // transformer
+      ['uxmerph',  'XMER-PH',        false],
+      ['ukva',     'KVA',            false],
+      // panel board
+      ['upnlph',   'PNL-PH',         false],
+      ['upnlcct',  "CCT'S",          false],
+      // drawing
+      ['udwg',     'drawing',        false],
+      // nameplate
+      ['unpl1',    'np_line1',       false],
+      ['unpl2',    'np_line2',       false],
+      ['unpl3',    'np_line3',       false],
+      ['unpl4',    'np_line4',       false],
+      ['unpqty',   'np_qty',         false],
+      ['unpsz',    'np_size',        false],
+      ['unpstyle', 'np_style',       false],
+    ];
+    for (const [fid, key, asInt] of map) {
+      const val = g(fid);
+      if (val) params[key] = asInt ? parseInt(val, 10) : val;
+    }
+    return params;
+  }
+
+  // Clear all detail fields back to defaults
+  function _clearDetailFields(p) {
+    const ids = [
+      'usz','uhp','ufla','uframe','utrip','uswitch','uftype','ufuse',
+      'ucqty','ucont','ucoil','uolqty','uol',
+      'ucct','ucctfsec','ucctfpri','ucfuseqty','ucfuse',
+      'ustop','ustart','uptc','upos','uss',
+      'uplred','uplgrn','uplylw','uplwht',
+      'utmrqty','uon','uoff',
+      'ucrqty','uno','unc','uptcaux','uhour',
+      'uvm','uam','ucts','uxmerph','ukva','upnlph','upnlcct','udwg',
+      'unpl1','unpl2','unpl3','unpl4','unpqty','unpsz','unpstyle',
+    ];
+    for (const id of ids) {
+      const el = document.getElementById(`${p}-${id}`);
+      if (el) el.value = '';
+    }
+    const qty = document.getElementById(`${p}-uqty`);
+    if (qty) qty.value = '1';
+    const df = document.getElementById(`${p}-udf`);
+    if (df) df.value = 'D';
+  }
+
+  // ── Forms ──────────────────────────────────────────────────────────────────
+  // ── Edit unit form ─────────────────────────────────────────────────────────
+  function openEditUnitForm(unit, secId) {
+    const isDual = (unit.starter_type ?? '').toUpperCase() === 'DUAL_FEEDER';
+    const f      = unit.fields ?? {};
+
+    // Helper: current value of a field, falling back to ''
+    const cur = key => f[key] ?? f[key?.toLowerCase()] ?? '';
+
+    showRp(`Edit Unit — ${unit.unit_no ?? '(space)'}`, `
+      <div class="mcc-form">
+        <div class="mcc-form-hint">Unit <b>${unit.unit_no ?? ''}</b> in section <b>${secId}</b></div>
+
+        <div class="mcc-form-row">
+          <label>Starter Type</label>
+          <select id="e-utype" class="form-input">
+            ${_STARTER_OPTS(unit.starter_type ?? 'FVNR')}
+          </select>
+        </div>
+        <div class="mcc-form-row">
+          <label>Tag <span style="font-size:0.7rem;color:var(--text-muted)">(shown in MCC_LAYOUT block)</span></label>
+          <input id="e-tag" class="form-input" value="${unit.tag ?? ''}" placeholder="e.g. FVNR-1 (leave blank = type name)" />
+        </div>
+        <div class="mcc-form-row">
+          <label>Mod Height <span id="e-umods-hint" style="font-size:0.7rem;color:var(--text-muted)"></span></label>
+          <select id="e-umods" class="form-input">
+            ${_MOD_OPTS(unit.mod_height ?? 4)}
+          </select>
+        </div>
+
+        <!-- CUSTOM unit width -->
+        <div id="e-custom-fields" style="display:${(unit.starter_type ?? '').toUpperCase() === 'CUSTOM' ? '' : 'none'}">
+          <div class="mcc-form-row">
+            <label>Unit Width</label>
+            <select id="e-custom-width" class="form-input">
+              <option value="400"${unit.custom_width === 400 ? ' selected' : ''}>400 mm (with 100mm wireway)</option>
+              <option value="500"${(!unit.custom_width || unit.custom_width === 500) ? ' selected' : ''}>500 mm (full width)</option>
+              <option value="600"${unit.custom_width === 600 ? ' selected' : ''}>600 mm (full width)</option>
+              <option value="800"${unit.custom_width === 800 ? ' selected' : ''}>800 mm (full width)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Dual feeder amp fields -->
+        <div id="e-dual-fields" style="display:${isDual ? '' : 'none'}">
+          <div class="mcc-form-row">
+            <label>Left Feeder Amps</label>
+            <input id="e-left-amp" class="form-input" value="${unit.left_amp ?? ''}" placeholder="e.g. 100" />
+          </div>
+          <div class="mcc-form-row">
+            <label>Right Feeder Amps</label>
+            <input id="e-right-amp" class="form-input" value="${unit.right_amp ?? ''}" placeholder="e.g. 100" />
+          </div>
+        </div>
+
+        <!-- Standard detail fields, pre-filled -->
+        <div id="e-details-block" style="display:${isDual ? 'none' : ''}">
+          <details class="mcc-form-details" open>
+            <summary>Details</summary>
+            ${_DETAIL_FIELDS('e')}
+          </details>
+        </div>
+
+        <div class="mcc-form-actions">
+          <button class="btn-primary" id="e-unit-ok">Save Changes</button>
+          <button class="btn-sm"      id="e-unit-cancel">Cancel</button>
+        </div>
+        <div class="mcc-form-result" id="e-unit-res"></div>
+      </div>
+    `);
+
+    // Pre-fill standard detail fields with current values
+    const prefill = {
+      'e-udf':      cur('D/F')       || 'D',
+      'e-uqty':     cur('QTY')       || '1',
+      'e-usz':      cur('SIZE'),
+      'e-uhp':      cur('HP/KW'),
+      'e-ufla':     cur('FLA'),
+      'e-uframe':   cur('FRAME'),
+      'e-utrip':    cur('TRIP'),
+      'e-uswitch':  cur('SWITCH'),
+      'e-uftype':   cur('F.TYPE'),
+      'e-ufuse':    cur('FUSE'),
+      'e-ucqty':    cur('CONT-QTY'),
+      'e-ucont':    cur('CONTACTOR'),
+      'e-ucoil':    cur('COIL'),
+      'e-uolqty':   cur('OL-QTY'),
+      'e-uol':      cur('OVERLOAD'),
+      'e-ucct':     cur('CCT'),
+      'e-ucctfsec': cur('CCT-FSEC'),
+      'e-ucctfpri': cur('CCT-FPRI'),
+      'e-ucfuseqty':cur('CFUSE-QTY'),
+      'e-ucfuse':   cur('CFUSE'),
+      'e-ustop':    cur('STOP'),
+      'e-ustart':   cur('START'),
+      'e-uptc':     cur('PTC'),
+      'e-upos':     cur('POS'),
+      'e-uss':      cur('SS'),
+      'e-uplred':   cur('PL-RED'),
+      'e-uplgrn':   cur('PL-GRN'),
+      'e-uplylw':   cur('PL-YEL'),
+      'e-uplwht':   cur('PL-WHT'),
+      'e-utmrqty':  cur('TMR-QTY'),
+      'e-uon':      cur('ON'),
+      'e-uoff':     cur('OFF'),
+      'e-ucrqty':   cur('CR-QTY'),
+      'e-uno':      cur('NO'),
+      'e-unc':      cur('NC'),
+      'e-uptcaux':  cur('PTC-AUX'),
+      'e-uhour':    cur('HOUR'),
+      'e-uvm':      cur('VOLTMETER'),
+      'e-uam':      cur('AMMETER'),
+      'e-ucts':     cur("CT'S"),
+      'e-uxmerph':  cur('XMER-PH'),
+      'e-ukva':     cur('KVA'),
+      'e-upnlph':   cur('PNL-PH'),
+      'e-upnlcct':  cur("CCT'S"),
+      'e-udwg':     cur('DRAWING'),
+    };
+    // Nameplate fields come from unit.nameplate_fields, not unit.fields
+    const np = unit.nameplate_fields ?? {};
+    const npPrefill = {
+      'e-unpl1':    np['LINE.1'] ?? '',
+      'e-unpl2':    np['LINE.2'] ?? '',
+      'e-unpl3':    np['LINE.3'] ?? '',
+      'e-unpl4':    np['LINE.4'] ?? '',
+      'e-unpqty':   np.QTY    ?? '',
+      'e-unpsz':    np.SIZE   ?? '',
+      'e-unpstyle': np.STYLE  ?? '',
+    };
+    for (const [id, val] of Object.entries(prefill)) {
+      const el = document.getElementById(id);
+      if (el && val) el.value = val;
+    }
+    for (const [id, val] of Object.entries(npPrefill)) {
+      const el = document.getElementById(id);
+      if (el && val) el.value = val;
+    }
+
+    // Show/hide dual vs standard fields on type change
+    function editConstraints() {
+      const typeEl    = document.getElementById('e-utype');
+      const modsEl    = document.getElementById('e-umods');
+      const hintEl    = document.getElementById('e-umods-min-hint');
+      const dualEl    = document.getElementById('e-dual-fields');
+      const customEl  = document.getElementById('e-custom-fields');
+      const detailsEl = document.getElementById('e-details-block');
+      if (!typeEl || !modsEl) return;
+      const isDualNow   = typeEl.value === 'DUAL_FEEDER';
+      const isCustomNow = typeEl.value === 'CUSTOM';
+      if (dualEl)    dualEl.style.display    = isDualNow   ? '' : 'none';
+      if (customEl)  customEl.style.display  = isCustomNow ? '' : 'none';
+      if (detailsEl) detailsEl.style.display = isDualNow   ? 'none' : '';
+      const minMod = MIN_MOD[typeEl.value] ?? 0;
+      if (minMod > 0) {
+        for (const opt of modsEl.options) opt.disabled = parseFloat(opt.value) < minMod;
+        if (parseFloat(modsEl.value) < minMod) {
+          for (const opt of modsEl.options) { if (!opt.disabled) { modsEl.value = opt.value; break; } }
+        }
+        if (hintEl) hintEl.textContent = `(min ${minMod} mod for ${typeEl.value})`;
+      } else {
+        for (const opt of modsEl.options) opt.disabled = false;
+        if (hintEl) hintEl.textContent = '';
+      }
+    }
+    document.getElementById('e-utype').addEventListener('change', editConstraints);
+    document.getElementById('e-umods').addEventListener('change', editConstraints);
+
+    document.getElementById('e-unit-cancel').addEventListener('click', hideRp);
+    document.getElementById('e-unit-ok').addEventListener('click', async () => {
+      const newType    = document.getElementById('e-utype').value;
+      const newMods    = parseFloat(document.getElementById('e-umods').value);
+      const isDualNow   = newType === 'DUAL_FEEDER';
+      const isCustomNow = newType === 'CUSTOM';
+      const tag = (document.getElementById('e-tag')?.value ?? '').trim();
+
+      const params = {
+        project_id:   _projectId,
+        unit_no:      unit.unit_no,
+        mod_height:   newMods,
+        starter_type: newType,
+        tag,
+        ...(isDualNow ? {
+          left_amp:  (document.getElementById('e-left-amp')?.value  ?? '').trim(),
+          right_amp: (document.getElementById('e-right-amp')?.value ?? '').trim(),
+        } : isCustomNow ? {
+          custom_width: parseInt(document.getElementById('e-custom-width')?.value ?? '500', 10),
+          ..._collectDetailFields('e'),
+        } : _collectDetailFields('e')),
+      };
+
+      setBusy(true);
+      try {
+        const res = await exec('edit_unit', params);
+        const resEl = document.getElementById('e-unit-res');
+        if (res.success) {
+          resEl.className = 'mcc-form-result mcc-ok';
+          resEl.textContent = `✓ ${unit.unit_no} updated.`;
+          await refreshState();
+        } else {
+          resEl.className = 'mcc-form-result mcc-err';
+          resEl.textContent = _friendlyError(res.error ?? 'Unknown error');
+        }
+      } catch (e) {
+        document.getElementById('e-unit-res').className = 'mcc-form-result mcc-err';
+        document.getElementById('e-unit-res').textContent = '✗ ' + e.message;
+      } finally { setBusy(false); }
+    });
+  }
+
+  function openAddSectionForm() {
+    if (!_projectId) { promptNewProject(); return; }
+    showRp('Add Section', `
+      <div class="mcc-form">
+        <div class="mcc-form-row">
+          <label>Section ID</label>
+          <input id="f-sid" class="form-input" placeholder="F1" maxlength="10" />
+        </div>
+        <div class="mcc-form-row">
+          <label>Width</label>
+          <select id="f-sw" class="form-input">
+            <option value="500" selected>500 mm</option>
+            <option value="600">600 mm</option>
+            <option value="800">800 mm</option>
+            <option value="1000">1000 mm</option>
+          </select>
+        </div>
+        <div class="mcc-form-actions">
+          <button class="btn-primary" id="f-sec-ok">Insert into AutoCAD</button>
+          <button class="btn-sm"      id="f-sec-cancel">Cancel</button>
+        </div>
+        <div class="mcc-form-result" id="f-sec-res"></div>
+      </div>
+    `);
+    document.getElementById('f-sec-cancel').addEventListener('click', hideRp);
+    document.getElementById('f-sec-ok').addEventListener('click', async () => {
+      const sid = document.getElementById('f-sid').value.trim().toUpperCase();
+      const sw  = parseInt(document.getElementById('f-sw').value);
+      if (!sid) { document.getElementById('f-sec-res').textContent = 'Section ID required.'; return; }
+      setBusy(true);
+      try {
+        const res = await exec('add_section', {
+          project_id: _projectId, section_id: sid, section_width: sw,
+        });
+        if (res.success) {
+          document.getElementById('f-sec-res').className = 'mcc-form-result mcc-ok';
+          document.getElementById('f-sec-res').textContent = `✓ Section ${sid} inserted.`;
+          await refreshState();
+        } else {
+          document.getElementById('f-sec-res').className = 'mcc-form-result mcc-err';
+          document.getElementById('f-sec-res').textContent = '✗ ' + (res.error ?? 'Unknown error');
+        }
+      } catch (e) {
+        document.getElementById('f-sec-res').className = 'mcc-form-result mcc-err';
+        document.getElementById('f-sec-res').textContent = '✗ ' + e.message;
+      } finally { setBusy(false); }
+    });
+  }
+
+  function openBulkAddForm() {
+    if (!_projectId) { promptNewProject(); return; }
+    showRp('Bulk Add Starters', `
+      <div class="mcc-form">
+        <div class="mcc-form-hint">Auto-creates sections and fills them with identical starters.</div>
+
+        <div class="mcc-form-row">
+          <label>Quantity</label>
+          <input id="b-count" class="form-input" type="number" min="1" value="12" />
+        </div>
+        <div class="mcc-form-row">
+          <label>Starter Type</label>
+          <select id="b-utype" class="form-input">${_STARTER_OPTS('FVNR')}</select>
+        </div>
+        <div class="mcc-form-row">
+          <label>Mod Height <span id="b-umods-hint" style="font-size:0.7rem;color:var(--text-muted)"></span></label>
+          <select id="b-umods" class="form-input">${_MOD_OPTS(4)}</select>
+        </div>
+        <div class="mcc-form-row">
+          <label>Section Prefix</label>
+          <input id="b-prefix" class="form-input" value="F" maxlength="5" placeholder="e.g. F" />
+        </div>
+        <div class="mcc-form-row">
+          <label>Section Width</label>
+          <select id="b-sw" class="form-input">
+            <option value="500" selected>500 mm</option>
+            <option value="600">600 mm</option>
+            <option value="800">800 mm</option>
+            <option value="1000">1000 mm</option>
+          </select>
+        </div>
+        <div class="mcc-form-row">
+          <label>Starting Section # <small style="color:var(--text-muted)">(leave blank = auto)</small></label>
+          <input id="b-startnum" class="form-input" type="number" min="1" placeholder="auto" />
+        </div>
+
+        <details class="mcc-form-details">
+          <summary>Details (optional — applied to all starters)</summary>
+          ${_DETAIL_FIELDS('b')}
+        </details>
+
+        <div class="mcc-form-actions">
+          <button class="btn-primary" id="b-ok">Insert into AutoCAD</button>
+          <button class="btn-sm"      id="b-cancel">Cancel</button>
+        </div>
+        <div class="mcc-form-result" id="b-res"></div>
+      </div>
+    `);
+
+    // Enforce min-mod per type
+    function bulkConstraints() {
+      const typeEl = document.getElementById('b-utype');
+      const modsEl = document.getElementById('b-umods');
+      const hintEl = document.getElementById('b-umods-hint');
+      if (!typeEl || !modsEl) return;
+      const minMod = MIN_MOD[typeEl.value] ?? 0;
+      const cur    = parseFloat(modsEl.value);
+      if (minMod > 0) {
+        for (const opt of modsEl.options) opt.disabled = parseFloat(opt.value) < minMod;
+        if (cur < minMod) {
+          for (const opt of modsEl.options) { if (!opt.disabled) { modsEl.value = opt.value; break; } }
+        }
+        if (hintEl) hintEl.textContent = `(min ${minMod} mod for ${typeEl.value})`;
+      } else {
+        for (const opt of modsEl.options) opt.disabled = false;
+        if (hintEl) hintEl.textContent = '';
+      }
+    }
+    document.getElementById('b-utype').addEventListener('change', bulkConstraints);
+    document.getElementById('b-umods').addEventListener('change', bulkConstraints);
+
+    document.getElementById('b-cancel').addEventListener('click', hideRp);
+    document.getElementById('b-ok').addEventListener('click', async () => {
+      const count  = parseInt(document.getElementById('b-count').value, 10);
+      const utype  = document.getElementById('b-utype').value;
+      const umods  = parseFloat(document.getElementById('b-umods').value);
+      const prefix = document.getElementById('b-prefix').value.trim().toUpperCase() || 'F';
+      const sw     = parseInt(document.getElementById('b-sw').value, 10);
+      const startRaw = document.getElementById('b-startnum').value.trim();
+      const startNum = startRaw ? parseInt(startRaw, 10) : undefined;
+      const resEl  = document.getElementById('b-res');
+
+      if (!count || count < 1) { resEl.className='mcc-form-result mcc-err'; resEl.textContent='✗ Quantity must be ≥ 1.'; return; }
+
+      setBusy(true);
+      try {
+        const params = {
+          project_id:    _projectId,
+          count,
+          starter_type:  utype,
+          mod_height:    umods,
+          section_prefix: prefix,
+          section_width:  sw,
+          ..._collectDetailFields('b'),
+        };
+        if (startNum) params.starting_section_number = startNum;
+
+        const res = await exec('bulk_add_units', params);
+        if (res.success || res.total_added > 0) {
+          resEl.className = 'mcc-form-result mcc-ok';
+          const secList = res.sections_created?.join(', ') || 'existing sections';
+          resEl.textContent = `✓ ${res.total_added} starters added` +
+            (res.sections_created?.length ? ` (new: ${secList})` : '') +
+            (res.errors?.length ? ` · ${res.errors.length} error(s)` : '') + '.';
+          await refreshState();
+        } else {
+          resEl.className = 'mcc-form-result mcc-err';
+          resEl.textContent = _friendlyError(res.error ?? res.errors?.[0] ?? 'Failed.');
+        }
+      } catch (e) {
+        resEl.className = 'mcc-form-result mcc-err';
+        resEl.textContent = _friendlyError(e.message);
+      } finally { setBusy(false); }
+    });
+  }
+
+  function openAddUnitForm(secId) {
+    if (!_projectId) { promptNewProject(); return; }
+
+    const sec = _projectState?.sections?.[secId];
+    const remaining = sec?.remaining_mods ?? '?';
+
+    // Auto-suggest next unit number
+    const existingNos = (sec?.units ?? []).map(u => u.unit_no);
+    const lastNo = existingNos[existingNos.length - 1] ?? (secId + '@');
+    const nextChar = String.fromCharCode(lastNo.charCodeAt(lastNo.length - 1) + 1);
+    const suggestedNo = secId + nextChar;
+
+    showRp(`Add Unit → ${secId}`, `
+      <div class="mcc-form">
+        <div class="mcc-form-hint">${remaining} mod available in ${secId}</div>
+
+        <div class="mcc-form-row">
+          <label>Unit No</label>
+          <input id="f-uno" class="form-input" value="${suggestedNo}" />
+        </div>
+        <div class="mcc-form-row">
+          <label>Starter Type</label>
+          <select id="f-utype" class="form-input">
+            ${_STARTER_OPTS()}
+          </select>
+        </div>
+        <div class="mcc-form-row">
+          <label>Tag <span style="font-size:0.7rem;color:var(--text-muted)">(shown in MCC_LAYOUT block)</span></label>
+          <input id="f-tag" class="form-input" placeholder="e.g. FVNR-1 (leave blank = type name)" />
+        </div>
+        <div class="mcc-form-row">
+          <label>Mod Height <span id="f-umods-min-hint" style="font-size:0.7rem;color:var(--text-muted)"></span></label>
+          <select id="f-umods" class="form-input">
+            ${_MOD_OPTS(4)}
+          </select>
+        </div>
+
+        <!-- CUSTOM unit width — shown only when CUSTOM type selected -->
+        <div id="f-custom-fields" style="display:none">
+          <div class="mcc-form-row">
+            <label>Unit Width</label>
+            <select id="f-custom-width" class="form-input">
+              <option value="400">400 mm (with 100mm wireway)</option>
+              <option value="500">500 mm (full width)</option>
+              <option value="600">600 mm (full width)</option>
+              <option value="800">800 mm (full width)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Dual feeder amperage fields — shown only when DUAL_FEEDER is selected -->
+        <div id="f-dual-fields" style="display:none">
+          <div class="mcc-form-row">
+            <label>Left Feeder Amps</label>
+            <input id="f-left-amp" class="form-input" placeholder="e.g. 100" />
+          </div>
+          <div class="mcc-form-row">
+            <label>Right Feeder Amps</label>
+            <input id="f-right-amp" class="form-input" placeholder="e.g. 100" />
+          </div>
+        </div>
+
+        <details class="mcc-form-details" id="f-details-block">
+          <summary>Details (optional)</summary>
+          ${_DETAIL_FIELDS('f')}
+        </details>
+
+        <div class="mcc-form-actions">
+          <button class="btn-primary" id="f-unit-ok">Insert into AutoCAD</button>
+          <button class="btn-sm"      id="f-unit-cancel">Cancel</button>
+        </div>
+        <div class="mcc-form-result" id="f-unit-res"></div>
+      </div>
+    `);
+
+    // ── Enforce minimums and type restrictions ─────────────────────────────
+    // Called on BOTH type-change AND mod-height-change so each stays consistent.
+    function applyConstraints() {
+      const typeEl     = document.getElementById('f-utype');
+      const modsEl     = document.getElementById('f-umods');
+      const hintEl     = document.getElementById('f-umods-min-hint');
+      const dualEl     = document.getElementById('f-dual-fields');
+      const detailsEl  = document.getElementById('f-details-block');
+      const customEl   = document.getElementById('f-custom-fields');
+      if (!typeEl || !modsEl) return;
+
+      const currentMods = parseFloat(modsEl.value);
+      const currentType = typeEl.value;
+      const isDual      = currentType === 'DUAL_FEEDER';
+      const isCustom    = currentType === 'CUSTOM';
+
+      if (dualEl)   dualEl.style.display   = isDual   ? '' : 'none';
+      if (customEl) customEl.style.display  = isCustom ? '' : 'none';
+      if (detailsEl) detailsEl.style.display = isDual  ? 'none' : '';
+
+      // 3-mod rule: units < 3 mod can only be SPACE
+      const tooSmallForStarter = currentMods < 3;
+      for (const opt of typeEl.options) {
+        opt.disabled = tooSmallForStarter && opt.value !== 'SPACE';
+      }
+      if (tooSmallForStarter && currentType !== 'SPACE') {
+        typeEl.value = 'SPACE';
+      }
+
+      // Min-mod rule per type (from MIN_MOD map)
+      const minMod = MIN_MOD[typeEl.value] ?? 0;
+      let hint = '';
+      if (minMod > 0) {
+        for (const opt of modsEl.options) {
+          opt.disabled = parseFloat(opt.value) < minMod;
+        }
+        if (currentMods < minMod) {
+          for (const opt of modsEl.options) {
+            if (parseFloat(opt.value) >= minMod) { modsEl.value = opt.value; break; }
+          }
+        }
+        hint = `(min ${minMod} mod for ${typeEl.value})`;
+      } else {
+        for (const opt of modsEl.options) {
+          // Re-enable anything disabled only by the min-mod rule
+          // (keep disabled if blocked by the 3-mod rule above)
+          if (!tooSmallForStarter || opt.value === 'SPACE') opt.disabled = false;
+        }
+      }
+      if (hintEl) hintEl.textContent = hint;
+    }
+    document.getElementById('f-utype').addEventListener('change', applyConstraints);
+    document.getElementById('f-umods').addEventListener('change', applyConstraints);
+    applyConstraints();   // run once immediately on form open
+
+    document.getElementById('f-unit-cancel').addEventListener('click', hideRp);
+    document.getElementById('f-unit-ok').addEventListener('click', async () => {
+      const uno   = document.getElementById('f-uno').value.trim().toUpperCase();
+      const utype = document.getElementById('f-utype').value;
+      const umods = parseFloat(document.getElementById('f-umods').value);
+
+      // Guard: enforce 3-mod rule and per-type minimums
+      if (umods < 3 && utype !== 'SPACE') {
+        const resEl = document.getElementById('f-unit-res');
+        resEl.className = 'mcc-form-result mcc-err';
+        resEl.textContent = `✗ Units under 3 mod must be type SPACE.`;
+        return;
+      }
+      const minRequired = MIN_MOD[utype] ?? 0;
+      if (umods < minRequired) {
+        const resEl = document.getElementById('f-unit-res');
+        resEl.className = 'mcc-form-result mcc-err';
+        resEl.textContent = `✗ ${utype} requires a minimum of ${minRequired} mod.`;
+        return;
+      }
+      // Unit number required for all types except SPACE (spacers can be anonymous)
+      if (!uno && utype !== 'SPACE') {
+        document.getElementById('f-unit-res').textContent = 'Unit number required.';
+        return;
+      }
+      setBusy(true);
+      try {
+        const isDualSubmit   = utype === 'DUAL_FEEDER';
+        const isCustomSubmit = utype === 'CUSTOM';
+        const tag = (document.getElementById('f-tag')?.value ?? '').trim();
+        const params = {
+          project_id:   _projectId,
+          section_id:   secId,
+          unit_no:      uno,
+          mod_height:   umods,
+          starter_type: utype,
+          ...(tag ? { tag } : {}),
+          ...(isDualSubmit ? {
+            left_amp:  (document.getElementById('f-left-amp')?.value  ?? '').trim(),
+            right_amp: (document.getElementById('f-right-amp')?.value ?? '').trim(),
+          } : isCustomSubmit ? {
+            custom_width: parseInt(document.getElementById('f-custom-width')?.value ?? '500', 10),
+            ..._collectDetailFields('f'),
+          } : _collectDetailFields('f')),
+        };
+        const res = await exec('add_unit', params);
+        const resEl = document.getElementById('f-unit-res');
+        if (res.success) {
+          resEl.className = 'mcc-form-result mcc-ok';
+          resEl.textContent = `✓ ${uno || '(space)'} inserted.`;
+          await refreshState();
+          // Suggest next unit number based on refreshed state
+          const updatedSec = _projectState?.sections?.[secId];
+          const units = (updatedSec?.units ?? []).filter(u => !u.unit_no?.startsWith('_SPACE_') && u.unit_no);
+          const lastNo = units[units.length - 1]?.unit_no ?? (secId + '@');
+          const nextNo = secId + String.fromCharCode(lastNo.charCodeAt(lastNo.length - 1) + 1);
+          const unoEl = document.getElementById('f-uno');
+          if (unoEl) unoEl.value = nextNo;
+          _clearDetailFields('f');
+        } else {
+          resEl.className = 'mcc-form-result mcc-err';
+          resEl.textContent = _friendlyError(res.error ?? 'Unknown error');
+        }
+      } catch (e) {
+        document.getElementById('f-unit-res').className = 'mcc-form-result mcc-err';
+        document.getElementById('f-unit-res').textContent = '✗ ' + e.message;
+      } finally { setBusy(false); }
+    });
+  }
+
+  // ── New Project dialog ─────────────────────────────────────────────────────
+  function promptNewProject() {
+    showRp('New MCC Project', `
+      <div class="mcc-form">
+        <p class="mcc-form-hint">
+          <b>MCC_LAYOUT.dwg</b>, <b>MCC_UNITDATA.dwg</b>, and <b>MCC_NAMEPLATE.dwg</b> must all be open in AutoCAD before starting.
+        </p>
+
+        <div class="mcc-form-section-label">MCC_LAYOUT coordinates</div>
+        <div class="mcc-form-row">
+          <label>First Section Origin X</label>
+          <input id="f-ox" class="form-input" value="95" type="number" step="0.5" />
+        </div>
+        <div class="mcc-form-row">
+          <label>First Section Origin Y</label>
+          <input id="f-oy" class="form-input" value="120" type="number" step="0.5" />
+        </div>
+        <div class="mcc-form-row">
+          <label>First Unit Y (top of first unit slot)</label>
+          <input id="f-fuy" class="form-input" value="224" type="number" step="0.5" />
+        </div>
+
+        <div class="mcc-form-section-label">MCC_UNITDATA coordinates</div>
+        <p class="mcc-form-hint" style="font-size:0.7rem">
+          In AutoCAD, hover over the first empty UDATALIN row to get these coordinates.
+          Rows will be inserted here and advance downward by 4 units each.
+        </p>
+        <div class="mcc-form-row">
+          <label>First Row X</label>
+          <input id="f-udx" class="form-input" value="20" type="number" step="0.5" />
+        </div>
+        <div class="mcc-form-row">
+          <label>First Row Y</label>
+          <input id="f-udy" class="form-input" value="230" type="number" step="0.5" />
+        </div>
+
+        <div class="mcc-form-actions">
+          <button class="btn-primary" id="f-np-ok">Create Project</button>
+          <button class="btn-sm"      id="f-np-cancel">Cancel</button>
+        </div>
+        <div class="mcc-form-result" id="f-np-res"></div>
+      </div>
+    `);
+    document.getElementById('f-np-cancel').addEventListener('click', hideRp);
+    document.getElementById('f-np-ok').addEventListener('click', doNewProject);
+  }
+
+  async function doNewProject() {
+    const ox  = parseFloat(document.getElementById('f-ox')?.value  ?? '95');
+    const oy  = parseFloat(document.getElementById('f-oy')?.value  ?? '120');
+    const fuy = parseFloat(document.getElementById('f-fuy')?.value ?? '224');
+    const udx = parseFloat(document.getElementById('f-udx')?.value ?? '20');
+    const udy = parseFloat(document.getElementById('f-udy')?.value ?? '230');
+    setBusy(true);
+    try {
+      const res = await exec('new_mcc_project', {
+        layout_origin_x:  ox,
+        layout_origin_y:  oy,
+        first_unit_y:     fuy,
+        unitdata_row_x:   udx,
+        unitdata_row_y:   udy,
+      });
+      if (res.success) {
+        _projectId = res.project_id;
+        await refreshProjects();
+        await refreshState();
+        hideRp();
+        setStatus(`Project ${_projectId} ready. Add a section to start.`);
+      } else {
+        const el = document.getElementById('f-np-res');
+        if (el) { el.className = 'mcc-form-result mcc-err'; el.textContent = _friendlyError(res.error); }
+      }
+    } catch (e) {
+      const el = document.getElementById('f-np-res');
+      if (el) { el.className = 'mcc-form-result mcc-err'; el.textContent = _friendlyError(e.message); }
+    } finally { setBusy(false); }
+  }
+
+  // ── Save / load project ────────────────────────────────────────────────────
+  async function doSaveProject() {
+    if (!_projectId) { setStatus('No active project to save.', true); return; }
+    setBusy(true);
+    try {
+      const res = await exec('save_project', { project_id: _projectId });
+      setStatus(res.success ? `Project saved to ${res.filepath ?? 'file'}.` : '✗ ' + res.error, !res.success);
+    } catch (e) { setStatus('✗ ' + e.message, true); }
+    finally { setBusy(false); }
+  }
+
+  // ── Project selector ───────────────────────────────────────────────────────
+  async function refreshProjects() {
+    try {
+      const res = await exec('list_projects');
+      const sel = document.getElementById('mcc-project-select');
+      if (!sel) return;
+      const prev = sel.value;
+      sel.innerHTML = '<option value="">— select project —</option>';
+      for (const p of (res.projects ?? [])) {
+        const opt = document.createElement('option');
+        opt.value       = p.project_id;
+        opt.textContent = `${p.project_id} (${p.total_sections}S / ${p.total_units}U)`;
+        sel.appendChild(opt);
+      }
+      if (_projectId) sel.value = _projectId;
+      else if (prev) sel.value = prev;
+    } catch (_) { /* no projects yet */ }
+  }
+
+  async function refreshState() {
+    if (!_projectId) { renderDiagram(null); return; }
+    try {
+      const res = await exec('get_project_state', { project_id: _projectId });
+      if (res.success) {
+        _projectState = res;
+        renderDiagram(res);
+        setStatus(`${_projectId} · ${res.total_sections} section(s) · ${res.total_units} unit(s)`);
+      } else {
+        setStatus('Error loading state: ' + res.error, true);
+      }
+    } catch (e) { setStatus('Error: ' + e.message, true); }
+    await refreshProjects();
+  }
+
+  // ── Busy state ─────────────────────────────────────────────────────────────
+  function setBusy(busy) {
+    _busy = busy;
+    document.getElementById('mcc-canvas')?.classList.toggle('mcc-canvas-busy', busy);
+  }
+
+  // ── Init ────────────────────────────────────────────────────────────────────
+  function init() {
+    // Toolbar buttons
+    document.getElementById('btn-new-mcc-project')
+            ?.addEventListener('click', promptNewProject);
+    document.getElementById('btn-add-mcc-section')
+            ?.addEventListener('click', openAddSectionForm);
+    document.getElementById('btn-bulk-add-units')
+            ?.addEventListener('click', openBulkAddForm);
+    document.getElementById('btn-refresh-mcc')
+            ?.addEventListener('click', refreshState);
+    document.getElementById('btn-save-mcc')
+            ?.addEventListener('click', doSaveProject);
+
+    // Project selector
+    document.getElementById('mcc-project-select')?.addEventListener('change', async e => {
+      _projectId = e.target.value || null;
+      if (_projectId) await refreshState();
+      else { _projectState = null; renderDiagram(null); setStatus('Select a project.'); }
+    });
+
+    // Close right panel
+    document.getElementById('mcc-rp-close')?.addEventListener('click', hideRp);
+
+    // Refresh when switching to MCC tab
+    const mccNavBtn = document.querySelector('.nav-btn[data-panel="mcc"]');
+    if (mccNavBtn) {
+      mccNavBtn.addEventListener('click', async () => {
+        await refreshProjects();
+        if (!_projectId) {
+          // auto-select if there's only one project
+          const sel = document.getElementById('mcc-project-select');
+          if (sel && sel.options.length === 2) {
+            sel.selectedIndex = 1;
+            _projectId = sel.value;
+          }
+        }
+        if (_projectId) await refreshState();
+        else { renderDiagram(null); setStatus('Click New Project to start.'); }
+      });
+    }
+  }
+
+  // Script loads at end of <body> so DOM is already ready — call init() directly.
+  // DOMContentLoaded would never fire here since it already fired before this script loaded.
+  init();
+
+  // Export for debugging / AI chat integration
+  window._mcc = { refreshState, refreshProjects, exec };
+})();

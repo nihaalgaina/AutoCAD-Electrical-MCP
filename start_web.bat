@@ -1,18 +1,18 @@
 @echo off
-REM ═══════════════════════════════════════════════════════════════════════════
+REM ---------------------------------------------------------------------------
 REM  AutoCAD Electrical — AI Control Center
 REM  Modo B: Interfaz web local + Ollama (sin Claude)
-REM ═══════════════════════════════════════════════════════════════════════════
+REM */-------------------------------------------------------------------------
 
 title AutoCAD Electrical - AI Control Center
 
 cd /d "%~dp0"
 
 echo.
-echo  ══════════════════════════════════════════════════
+echo  --------------------------------------------------
 echo   AutoCAD Electrical - AI Control Center
-echo   Iniciando servidor web en http://127.0.0.1:8080
-echo  ══════════════════════════════════════════════════
+echo   Initializing web server at http://127.0.0.1:8080
+echo  --------------------------------------------------
 echo.
 
 REM Check Python

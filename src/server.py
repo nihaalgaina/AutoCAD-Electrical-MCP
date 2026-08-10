@@ -93,6 +93,8 @@ def _attempt_autocad_connect() -> None:
 # ---------------------------------------------------------------------------
 from src.tools import drawing, electrical, wires, components, reports, project
 from src.tools import drawing3d
+from src.tools import mcc_blocks
+from src.tools import mcc_layout
 
 
 # ===========================================================================
@@ -721,6 +723,241 @@ def sync_project() -> dict[str, Any]:
 def get_active_drawing() -> dict[str, Any]:
     """Return information about the currently active drawing."""
     return project.get_active_drawing()
+
+
+
+# ===========================================================================
+# MCC Block tools
+# ===========================================================================
+
+@mcp.tool()
+def insert_block(
+    block_name: str,
+    x: float,
+    y: float,
+    x_scale: float = 1.0,
+    y_scale: float = 1.0,
+    rotation: float = 0.0,
+    attributes: dict[str, str] | None = None,
+    layer: str | None = None,
+) -> dict[str, Any]:
+    """Insert any named block from the company library at (x, y)."""
+    return mcc_blocks.insert_block(block_name, x, y, x_scale, y_scale, rotation, attributes, layer)
+
+
+@mcp.tool()
+def insert_mcc_section(
+    section_width: int,
+    x: float,
+    y: float,
+    section_id: str = "",
+    variant: str | None = None,
+    rotation: float = 0.0,
+) -> dict[str, Any]:
+    """Insert an MCC section frame block (400/500/600/800/1000mm)."""
+    return mcc_blocks.insert_mcc_section(section_width, x, y, section_id, variant, rotation)
+
+
+@mcp.tool()
+def insert_unit(
+    section_width: int,
+    mod_height: float,
+    x: float,
+    y: float,
+    unit_no: str = "",
+    starter_type: str = "",
+    equip_no: str = "",
+    rotation: float = 0.0,
+) -> dict[str, Any]:
+    """Insert a unit block. Block name resolved automatically from section_width + mod_height."""
+    return mcc_blocks.insert_unit(section_width, mod_height, x, y, unit_no, starter_type, equip_no, rotation)
+
+
+@mcp.tool()
+def list_mcc_blocks() -> dict[str, Any]:
+    """Return all MCC section and unit blocks from the catalog."""
+    return mcc_blocks.list_mcc_blocks()
+
+
+@mcp.tool()
+def read_block_attributes(handle: str) -> dict[str, Any]:
+    """Read all attributes from a block in the drawing by its AutoCAD handle."""
+    return mcc_blocks.read_block_attributes(handle)
+
+
+@mcp.tool()
+def update_block_attributes(handle: str, attributes: dict[str, str]) -> dict[str, Any]:
+    """Update attribute values on an already-inserted block by its handle."""
+    return mcc_blocks.update_block_attributes(handle, attributes)
+
+
+# ===========================================================================
+# MCC Layout tools  (stateful project engine — mcc_layout.py + mcc_unitdata.py)
+# ===========================================================================
+
+@mcp.tool()
+def new_mcc_project(
+    layout_origin_x: float = 0.0,
+    layout_origin_y: float = 0.0,
+    first_unit_y: float = 224.0,
+    unitdata_row_x: float = 0.0,
+    unitdata_row_y: float = 0.0,
+) -> dict[str, Any]:
+    """Start a new MCC project.  MCC_LAYOUT.dwg and MCC_UNITDATA.dwg must be open.
+
+    Returns a project_id to pass to all subsequent add_section / add_unit calls.
+
+    Parameters
+    ----------
+    layout_origin_x/y : float  Insertion point for the first section frame.
+    first_unit_y      : float  Y of the first unit slot inside every section (default 224.0).
+    unitdata_row_x/y  : float  World coords for the first UDATALIN row.
+    """
+    return mcc_layout.new_mcc_project(
+        layout_origin_x, layout_origin_y, first_unit_y,
+        unitdata_row_x, unitdata_row_y,
+    )
+
+
+@mcp.tool()
+def add_section(
+    project_id: str,
+    section_width: int,
+    section_id: str,
+    variant: str | None = None,
+) -> dict[str, Any]:
+    """Insert the next MCC section frame into MCC_LAYOUT (left-to-right automatically).
+
+    Parameters
+    ----------
+    project_id    : str        From new_mcc_project().
+    section_width : int        400 / 500 / 600 / 800 / 1000 mm.
+    section_id    : str        Label for the SECTION attribute e.g. "F1", "G2".
+    variant       : str | None Optional alternate block variant.
+    """
+    return mcc_layout.add_section(project_id, section_width, section_id, variant)
+
+
+@mcp.tool()
+def add_unit(
+    project_id: str,
+    section_id: str,
+    mod_height: float,
+    unit_no: str,
+    qty: int = 1,
+    drawout_fixed: str = "F",
+    starter_type: str = "",
+    eemac_size: str = "",
+    hp_kw: str = "",
+    fla: str = "",
+    frame: str = "",
+    trip: str = "",
+    switch: str = "",
+    fuse_type: str = "",
+    fuse: str = "",
+    cont_qty: str = "",
+    contactor: str = "",
+    coil: str = "",
+    ol_qty: str = "",
+    overload: str = "",
+    drawing: str = "",
+) -> dict[str, Any]:
+    """Insert a unit block into MCC_LAYOUT and a UDATALIN row into MCC_UNITDATA.
+
+    Parameters
+    ----------
+    project_id    : str   From new_mcc_project().
+    section_id    : str   Parent section e.g. "F1".
+    mod_height    : float Unit height in mod units (e.g. 8, 5, 12).
+    unit_no       : str   Unit identifier e.g. "F1A".
+    qty           : int   Quantity (UDATALIN QTY field).
+    drawout_fixed : str   "D" drawout / "F" fixed.
+    starter_type  : str   e.g. "FVNR", "FEEDER", "FVR", "2S1W", "VFD".
+    eemac_size    : str   EEMAC motor size 1–6.
+    hp_kw         : str   Motor rating e.g. "15HP".
+    fla           : str   Full load amps e.g. "20".
+    frame         : str   Breaker frame e.g. "CD63A".
+    trip          : str   Breaker trip amps.
+    switch        : str   Switch size.
+    fuse_type     : str   Fuse type.
+    fuse          : str   Fuse size.
+    cont_qty      : str   Quantity of contactors.
+    contactor     : str   Contactor catalog # e.g. "3RT2036".
+    coil          : str   Coil voltage.
+    ol_qty        : str   Quantity of overloads.
+    overload      : str   Overload range e.g. "28-40A".
+    drawing       : str   Schematic drawing number.
+    """
+    return mcc_layout.add_unit(
+        project_id, section_id, mod_height, unit_no,
+        qty, drawout_fixed, starter_type, eemac_size,
+        hp_kw, fla, frame, trip, switch, fuse_type, fuse,
+        cont_qty, contactor, coil, ol_qty, overload, drawing,
+    )
+
+
+@mcp.tool()
+def update_unit(
+    project_id: str,
+    unit_no: str,
+    fields: dict[str, str],
+) -> dict[str, Any]:
+    """Update UDATALIN fields on an existing unit in both drawings.
+
+    Parameters
+    ----------
+    project_id : str        Project ID.
+    unit_no    : str        Unit to update e.g. "F1A".
+    fields     : dict       UDATALIN tag → new value.
+    """
+    return mcc_layout.update_unit(project_id, unit_no, fields)
+
+
+@mcp.tool()
+def swap_units(
+    project_id: str,
+    unit_no_a: str,
+    unit_no_b: str,
+) -> dict[str, Any]:
+    """Swap attribute data between two units (physical positions unchanged).
+
+    Parameters
+    ----------
+    project_id : str   Project ID.
+    unit_no_a  : str   First unit e.g. "F1A".
+    unit_no_b  : str   Second unit e.g. "F2A".
+    """
+    return mcc_layout.swap_units(project_id, unit_no_a, unit_no_b)
+
+
+@mcp.tool()
+def sync_layout(project_id: str) -> dict[str, Any]:
+    """Regenerate both drawings for a full display refresh.
+
+    Not required after add_section / add_unit — use only for manual refresh.
+
+    Parameters
+    ----------
+    project_id : str   Project ID.
+    """
+    return mcc_layout.sync_layout(project_id)
+
+
+@mcp.tool()
+def get_project_state(project_id: str) -> dict[str, Any]:
+    """Return the full current state of an MCC project (sections, units, handles).
+
+    Parameters
+    ----------
+    project_id : str   Project ID.
+    """
+    return mcc_layout.get_project_state(project_id)
+
+
+@mcp.tool()
+def list_projects() -> dict[str, Any]:
+    """List all active in-memory MCC projects."""
+    return mcc_layout.list_projects()
 
 
 # ===========================================================================

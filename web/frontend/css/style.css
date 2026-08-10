@@ -1366,3 +1366,509 @@ a { color: var(--accent); text-decoration: none; }
 @media (max-width: 720px) {
   .topbar-center { display: none; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MCC BUILDER
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Toolbar ────────────────────────────────────────────────────────────── */
+.mcc-toolbar { gap: 6px; flex-wrap: wrap; }
+
+/* ── Workspace: canvas + slide-in panel, side by side ──────────────────── */
+#panel-mcc {
+  display: none;          /* hidden by default; main.js adds .active */
+  flex-direction: column;
+}
+#panel-mcc.active { display: flex; }
+
+.mcc-workspace {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  min-height: 0;          /* allow flex children to shrink below content size */
+}
+
+/* ── Scrollable diagram canvas ──────────────────────────────────────────── */
+.mcc-canvas-wrap {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: auto;
+  padding: 16px;
+  min-width: 0;
+}
+
+.mcc-canvas {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 100%;
+}
+
+.mcc-canvas.mcc-canvas-busy {
+  opacity: 0.55;
+  pointer-events: none;
+  cursor: wait;
+}
+
+/* Empty state */
+.mcc-empty-canvas {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 260px;
+  gap: 10px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+.mcc-empty-icon { font-size: 2.2rem; opacity: .25; line-height: 1; }
+.mcc-empty-canvas p { margin: 0; font-size: 0.85rem; }
+
+/* ── Section column ─────────────────────────────────────────────────────── */
+.mcc-col {
+  display: flex;
+  flex-direction: column;
+  width: 148px;
+  min-width: 148px;
+  background: #1a2236;          /* visibly lighter than --bg-base */
+  border: 1px solid #3a5070;    /* brighter than --border for contrast */
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+  min-height: 200px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.45);
+}
+
+.mcc-col-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 8px 10px 6px;
+  background: #222e44;          /* distinct header band */
+  border-bottom: 1px solid #3a5070;
+}
+.mcc-col-id {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  letter-spacing: 0.03em;
+}
+.mcc-col-mm {
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+}
+
+/* Mod-usage bar */
+.mcc-col-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: #111926;
+  border-bottom: 1px solid #2a3c55;
+}
+.mcc-col-bar {
+  flex: 1;
+  height: 5px;
+  background: #1e2d45;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid #2e4060;
+}
+.mcc-col-bar-fill {
+  height: 100%;
+  background: var(--success);
+  border-radius: 3px;
+  transition: width 0.35s ease;
+}
+.mcc-col-pct {
+  font-size: 0.62rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  min-width: 42px;
+  text-align: right;
+}
+
+/* Units container */
+.mcc-col-units {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+/* ── Drop zones ─────────────────────────────────────────────────────────── */
+.mcc-drop-zone {
+  height: 3px;
+  flex-shrink: 0;
+  margin: 0 6px;
+  border-radius: 2px;
+  transition: height 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+/* Expand all drop zones when a drag is in flight */
+.mcc-canvas.mcc-dragging .mcc-drop-zone {
+  height: 18px;
+  background: rgba(79, 163, 247, 0.10);
+  cursor: copy;
+}
+/* Highlighted drop zone (dragover) */
+.mcc-drop-zone.mcc-dz-active {
+  background: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--accent-glow);
+  height: 4px;
+}
+/* The empty-slot also acts as drop zone */
+.mcc-canvas.mcc-dragging .mcc-unit-empty {
+  border-color: var(--accent);
+  cursor: copy;
+}
+.mcc-unit-empty.mcc-dz-active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+/* ── Unit block ─────────────────────────────────────────────────────────── */
+.mcc-unit-block {
+  display: flex;
+  flex-direction: row;
+  border-bottom: 1px solid #2a3c55;
+  overflow: hidden;
+  cursor: grab;
+  transition: background 0.12s, opacity 0.12s;
+  min-height: 32px;
+  position: relative;
+}
+.mcc-unit-block:hover { background: #202d42; }
+/* Ghost while being dragged */
+.mcc-unit-block.mcc-unit-dragging {
+  opacity: 0.35;
+  cursor: grabbing;
+}
+/* Delete button — hidden until the unit block is hovered */
+.mcc-unit-delete-btn {
+  position: absolute;
+  top: 4px;
+  right: 20px;   /* sits just left of the drag handle */
+  font-size: 0.6rem;
+  line-height: 1;
+  color: #4a6080;
+  cursor: pointer;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s;
+}
+.mcc-unit-block:hover .mcc-unit-delete-btn {
+  opacity: 1;
+}
+.mcc-unit-delete-btn:hover {
+  color: #e05858;
+}
+
+/* Detail field group headers inside the add-unit / bulk-add forms */
+.mcc-detail-group-hdr {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  margin: 10px 0 4px;
+  padding-bottom: 2px;
+}
+
+/* Dual-feeder L / R side-by-side layout inside a unit block */
+.mcc-unit-dual-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0;
+}
+.mcc-unit-dual-cell {
+  flex: 1;
+  min-width: 0;
+}
+.mcc-unit-dual-sep {
+  color: #4a6080;
+  font-size: 0.7rem;
+  flex-shrink: 0;
+}
+
+/* Drag handle pill in the top-right corner */
+.mcc-unit-drag-handle {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 0.7rem;
+  color: #4a6080;
+  line-height: 1;
+  user-select: none;
+  pointer-events: none;
+  letter-spacing: -0.05em;
+}
+
+.mcc-unit-stripe {
+  width: 5px;
+  flex-shrink: 0;
+}
+.mcc-unit-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 4px 7px;
+  gap: 1px;
+  overflow: hidden;
+  cursor: pointer;
+}
+.mcc-unit-body:hover {
+  background: rgba(255,255,255,0.04);
+  border-radius: 2px;
+}
+.mcc-unit-tag {
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.mcc-unit-no {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mcc-unit-desc {
+  font-size: 0.62rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mcc-unit-meta {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+/* Empty slot — click to add unit */
+.mcc-unit-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 6px;
+  padding: 8px 4px;
+  border: 1.5px dashed #4a6080;   /* more visible dashed border */
+  border-radius: 5px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  text-align: center;
+  flex: 1;
+  min-height: 40px;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.mcc-unit-empty:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+/* Ghost "add section" column */
+.mcc-col-ghost {
+  background: #111926;
+  border-style: dashed;
+  border-color: #4a6080;          /* brighter dashed border */
+  cursor: pointer;
+  min-height: 100px;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.75;                  /* was 0.45 — now clearly visible */
+  transition: opacity 0.15s, border-color 0.15s, background 0.15s;
+}
+.mcc-col-ghost:hover {
+  opacity: 1;
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.mcc-ghost-inner {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  padding: 24px 12px;
+  line-height: 1.6;
+}
+
+/* ── Slide-in right panel ─────────────────────────────────────────────── */
+.mcc-rp {
+  width: 0;
+  flex-shrink: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: #131d2e;
+  border-left: 0 solid #3a5070;
+  transition: width 0.22s ease, border-left-width 0.22s;
+}
+.mcc-rp.mcc-rp-open {
+  width: 300px;
+  border-left-width: 1px;
+}
+
+.mcc-rp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid #3a5070;
+  flex-shrink: 0;
+  background: #1a2639;
+}
+.mcc-rp-title {
+  font-weight: 700;
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mcc-rp-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+/* ── Forms ────────────────────────────────────────────────────────────── */
+.mcc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mcc-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.mcc-form-row label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* Inputs inside the MCC form */
+.mcc-form .form-input {
+  background: #0e1926;
+  border: 1px solid #4a6080;
+  border-radius: 5px;
+  color: var(--text-primary);
+  padding: 7px 10px;
+  font-size: 0.82rem;
+  width: 100%;
+  box-sizing: border-box;
+  transition: border-color 0.15s;
+}
+.mcc-form .form-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+.mcc-form select.form-input {
+  cursor: pointer;
+  appearance: auto;
+}
+
+.mcc-form-section-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border-bottom: 1px solid #2e4060;
+  padding-bottom: 4px;
+  margin-top: 4px;
+}
+
+.mcc-form-hint {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  padding: 8px 10px;
+  background: var(--bg-inset);
+  border-radius: 5px;
+  border-left: 3px solid var(--accent);
+  line-height: 1.4;
+}
+.mcc-form-hint b { color: var(--text-primary); }
+
+.mcc-form-details {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--bg-surface);
+}
+.mcc-form-details summary {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  cursor: pointer;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+  user-select: none;
+}
+.mcc-form-details[open] summary { margin-bottom: 10px; }
+
+.mcc-form-actions {
+  display: flex;
+  gap: 8px;
+  padding-top: 4px;
+}
+.mcc-form-actions .btn-primary {
+  flex: 1;          /* take all available width so it's easy to click */
+  justify-content: center;
+  font-size: 0.82rem;
+  padding: 9px 12px;
+  font-weight: 700;
+}
+.mcc-form-actions .btn-sm {
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  padding: 8px 14px;
+}
+
+.mcc-form-result {
+  font-size: 0.75rem;
+  min-height: 0;
+  padding: 0;
+  border-radius: 5px;
+  line-height: 1.4;
+  transition: padding 0.1s;
+}
+.mcc-form-result:not(:empty) { padding: 7px 10px; }
+.mcc-form-result.mcc-ok  {
+  background: var(--success-dim);
+  color: var(--success);
+  border: 1px solid rgba(61,186,78,.25);
+}
+.mcc-form-result.mcc-err {
+  background: var(--error-dim);
+  color: var(--error);
+  border: 1px solid rgba(240,83,73,.25);
+}
+
+/* ── Status bar ───────────────────────────────────────────────────────── */
+.mcc-statusbar {
+  padding: 6px 16px;
+  font-size: 0.71rem;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border);
+  background: var(--bg-inset);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+.mcc-statusbar.mcc-statusbar-error { color: var(--error); }
