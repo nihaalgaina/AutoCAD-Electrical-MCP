@@ -2,13 +2,13 @@
 
 > MCP server + local AI web dashboard for **AutoCAD Electrical 2025** — control AutoCAD with plain language via Claude, Ollama, or any OpenAI-compatible model.
 
+> This fork was designed for **Electrical Controls Manufacturing** (ECM), aimed at adding support for their Motor Control Center (MCC) products, as well as planned support for
+variable frequency drives (VFDs), soft starters, breaker panels, and other products. The MCC configurator will not work unless MCC_LAYOUT, MCC_UNITDATA, and MCC_NAMEPLATE.dwg are open in AutoCAD.
+
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![AutoCAD Electrical 2025](https://img.shields.io/badge/AutoCAD_Electrical-2025-red.svg)](https://www.autodesk.com/products/autocad/autocad-electrical)
+[![AutoCAD Electrical 2027](https://img.shields.io/badge/AutoCAD_Electrical-2025-red.svg)](https://www.autodesk.com/products/autocad/autocad-electrical)
 [![Ollama](https://img.shields.io/badge/Ollama-local_AI-black.svg)](https://ollama.com)
-
-> This fork was designed for **Electrical Controls Manufacturing** (ECM), aimed at adding support for their Motor Control Center (MCC) products, as well as planned support for
-variable frequency drives (VFDs), soft starters, breaker panels, and other products.
 
 ---
 
@@ -272,7 +272,7 @@ Single prompts that trigger multi-step execution plans:
 
 ```bash
 # 1. Clone
-git clone https://github.com/Igualguana/AUTOCAD-ELECTRICAL-MCP.git
+git clone https://github.com/nihaalgaina/AUTOCAD-ELECTRICAL-MCP.git
 cd AUTOCAD-ELECTRICAL-MCP
 
 # 2. Install dependencies
@@ -280,10 +280,29 @@ pip install -e .
 
 # 3. Configure environment
 cp .env.example .env
-# Edit .env — add your ANTHROPIC_API_KEY if using Mode A
 ```
 
-### Ollama setup (Mode B — local AI)
+Open `.env` in any text editor and fill in the values for your setup:
+
+```env
+# Path to the folder containing your MCC block .DWG files
+# (MCC_400.DWG, UNIT4040.DWG, UDATALIN.DWG, LAMACOID.DWG, etc.)
+MCC_BLOCK_LIBRARY=C:\Path\To\Your\MCC Blocks
+
+# Only needed if you want to use Claude as the AI provider
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Only needed for OpenAI / Groq
+OPENAI_API_KEY=...
+GROQ_API_KEY=...
+```
+
+> **`MCC_BLOCK_LIBRARY`** is the only setting most users need to change.
+> Point it at whichever folder holds your company's `.DWG` block library.
+> Multiple folders are supported — separate them with a semicolon:
+> `MCC_BLOCK_LIBRARY=C:\Blocks\400mm;C:\Blocks\500mm`
+
+### Ollama setup (Mode B — local AI, no API key required)
 
 ```bash
 # Install from https://ollama.com then:
@@ -349,6 +368,28 @@ esquema eléctrico                          → 31-step compound (schematic)
 cambia a vista isométrica SE               → zoom_3d_view SE_ISOMETRIC
 genera el BOM del proyecto                 → generate_bom
 ```
+
+---
+
+## MCC Configurator Setup
+
+The MCC Builder requires three template drawings to be open in AutoCAD before you start a project. These are the files the tool writes into — they must come from your company's block library.
+
+| File | Purpose |
+|------|---------|
+| `MCC_LAYOUT.dwg` | Receives section frames and unit blocks |
+| `MCC_UNITDATA.dwg` | Receives `UDATALIN` data rows |
+| `MCC_NAMEPLATE.dwg` | Receives `LAMACOID` nameplate rows |
+
+**Steps:**
+
+1. Set `MCC_BLOCK_LIBRARY` in your `.env` to the folder containing these files (and all unit block DWGs).
+2. Open `MCC_LAYOUT.dwg`, `MCC_UNITDATA.dwg`, and `MCC_NAMEPLATE.dwg` in AutoCAD Electrical.
+3. Start the web server: `python start_web.py`
+4. Open `http://127.0.0.1:8080` and click **MCC** in the sidebar.
+5. Click **New Project** — the tool will connect to the three open drawings automatically.
+
+> If you see *"MCC_LAYOUT.dwg is not open"* when creating a project, go back to step 2 and make sure all three files are open in AutoCAD before clicking New Project.
 
 ---
 
