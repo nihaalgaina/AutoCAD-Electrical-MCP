@@ -16,6 +16,7 @@
 
   // ── State ─────────────────────────────────────────────────────────────────
   let _projectId    = null;
+  let _projectName  = null;   // human-readable project name (may be same as ID if unnamed)
   let _projectState = null;
   let _busy         = false;
 
@@ -1153,6 +1154,12 @@
           <b>MCC_LAYOUT.dwg</b>, <b>MCC_UNITDATA.dwg</b>, and <b>MCC_NAMEPLATE.dwg</b> must all be open in AutoCAD before starting.
         </p>
 
+        <div class="mcc-form-section-label">Project</div>
+        <div class="mcc-form-row">
+          <label>Project Name</label>
+          <input id="f-pname" class="form-input" placeholder="e.g. Plant A MCC-1" />
+        </div>
+
         <div class="mcc-form-section-label">MCC_LAYOUT coordinates</div>
         <div class="mcc-form-row">
           <label>First Section Origin X</label>
@@ -1193,6 +1200,7 @@
   }
 
   async function doNewProject() {
+    const pname = (document.getElementById('f-pname')?.value ?? '').trim();
     const ox  = parseFloat(document.getElementById('f-ox')?.value  ?? '95');
     const oy  = parseFloat(document.getElementById('f-oy')?.value  ?? '120');
     const fuy = parseFloat(document.getElementById('f-fuy')?.value ?? '224');
@@ -1206,13 +1214,16 @@
         first_unit_y:     fuy,
         unitdata_row_x:   udx,
         unitdata_row_y:   udy,
+        project_name:     pname,
       });
       if (res.success) {
         _projectId = res.project_id;
+        _projectName = res.project_name || res.project_id;
         await refreshProjects();
         await refreshState();
         hideRp();
-        setStatus(`Project ${_projectId} ready. Add a section to start.`);
+        const label = _projectName !== res.project_id ? `"${_projectName}" (${res.project_id})` : res.project_id;
+        setStatus(`Project ${label} ready. Add a section to start.`);
       } else {
         const el = document.getElementById('f-np-res');
         if (el) { el.className = 'mcc-form-result mcc-err'; el.textContent = _friendlyError(res.error); }
@@ -1229,9 +1240,88 @@
     setBusy(true);
     try {
       const res = await exec('save_project', { project_id: _projectId });
-      setStatus(res.success ? `Project saved to ${res.filepath ?? 'file'}.` : '✗ ' + res.error, !res.success);
+      if (res.success) {
+        const fname = res.filepath ?? 'file';
+        setStatus(`Saved → ${fname}`);
+      } else {
+        setStatus('✗ ' + res.error, true);
+      }
     } catch (e) { setStatus('✗ ' + e.message, true); }
     finally { setBusy(false); }
+  }
+
+  async function promptLoadProject() {
+    showRp('Load Saved Project', '<div class="mcc-form"><p class="mcc-form-hint">Scanning saved projects…</p></div>');
+    setBusy(true);
+    let projects = [];
+    try {
+      const res = await exec('list_saved_projects', {});
+      projects = res.projects ?? [];
+    } catch (e) {
+      showRp('Load Saved Project', `<div class="mcc-form"><p class="mcc-form-result mcc-err">✗ ${e.message}</p></div>`);
+      setBusy(false);
+      return;
+    } finally { setBusy(false); }
+
+    if (projects.length === 0) {
+      showRp('Load Saved Project', `
+        <div class="mcc-form">
+          <p class="mcc-form-hint">No saved project files found in the <b>projects/</b> folder.</p>
+          <p class="mcc-form-hint">Save a project first using the <b>Save</b> toolbar button.</p>
+        </div>`);
+      return;
+    }
+
+    const rows = projects.map((p, i) => {
+      const name    = p.project_name || p.project_id;
+      const subline = `${p.total_sections} section(s) · ${p.total_units} unit(s)`;
+      const saved   = p.saved_at ? new Date(p.saved_at).toLocaleString() : '';
+      return `
+        <div class="mcc-load-row" data-idx="${i}" style="
+          display:flex;align-items:center;gap:10px;padding:8px;
+          border-bottom:1px solid var(--border,#333);cursor:pointer;border-radius:4px;">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:0.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</div>
+            <div style="font-size:0.72rem;color:var(--text-secondary,#888)">${subline}${saved ? ' · ' + saved : ''}</div>
+            <div style="font-size:0.68rem;color:var(--text-secondary,#888);opacity:0.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.filepath}</div>
+          </div>
+          <button class="btn-primary btn-load-file" data-filepath="${p.filepath}" data-name="${name}" style="flex-shrink:0;font-size:0.75rem;padding:4px 10px">Load</button>
+        </div>`;
+    }).join('');
+
+    showRp('Load Saved Project', `
+      <div class="mcc-form">
+        <p class="mcc-form-hint">Select a project to load into AutoCAD. The three MCC drawing files must be open.</p>
+        <div id="lp-list" style="max-height:55vh;overflow-y:auto">${rows}</div>
+        <div class="mcc-form-result" id="lp-res"></div>
+      </div>`);
+
+    document.querySelectorAll('.btn-load-file').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const filepath = btn.dataset.filepath;
+        const name     = btn.dataset.name;
+        setBusy(true);
+        try {
+          const res = await exec('load_project', { filepath });
+          const resEl = document.getElementById('lp-res');
+          if (res.success) {
+            _projectId   = res.project_id;
+            _projectName = res.project_name || name;
+            await refreshProjects();
+            await refreshState();
+            hideRp();
+            const label = _projectName !== _projectId ? `"${_projectName}" [${_projectId}]` : _projectId;
+            setStatus(`Loaded ${label} · ${res.sections?.length ?? 0} section(s)`);
+          } else if (resEl) {
+            resEl.className = 'mcc-form-result mcc-err';
+            resEl.textContent = '✗ ' + _friendlyError(res.error);
+          }
+        } catch (e) {
+          const resEl = document.getElementById('lp-res');
+          if (resEl) { resEl.className = 'mcc-form-result mcc-err'; resEl.textContent = '✗ ' + e.message; }
+        } finally { setBusy(false); }
+      });
+    });
   }
 
   // ── Project selector ───────────────────────────────────────────────────────
@@ -1245,7 +1335,8 @@
       for (const p of (res.projects ?? [])) {
         const opt = document.createElement('option');
         opt.value       = p.project_id;
-        opt.textContent = `${p.project_id} (${p.total_sections}S / ${p.total_units}U)`;
+        const label = p.project_name ? `${p.project_name}  [${p.project_id}]` : p.project_id;
+        opt.textContent = `${label}  (${p.total_sections}S / ${p.total_units}U)`;
         sel.appendChild(opt);
       }
       if (_projectId) sel.value = _projectId;
@@ -1260,7 +1351,10 @@
       if (res.success) {
         _projectState = res;
         renderDiagram(res);
-        setStatus(`${_projectId} · ${res.total_sections} section(s) · ${res.total_units} unit(s)`);
+        const nameLabel = _projectName && _projectName !== _projectId
+          ? `"${_projectName}" [${_projectId}]`
+          : _projectId;
+        setStatus(`${nameLabel} · ${res.total_sections} section(s) · ${res.total_units} unit(s)`);
       } else {
         setStatus('Error loading state: ' + res.error, true);
       }
@@ -1274,6 +1368,378 @@
     document.getElementById('mcc-canvas')?.classList.toggle('mcc-canvas-busy', busy);
   }
 
+  // ── General Data form ──────────────────────────────────────────────────────
+  //
+  // Maps attdef name → [label, placeholder]
+  const GD_FIELDS = {
+    // Power
+    VOLT:          ['Voltage',              'e.g. 600'],
+    PHASE:         ['Phase',               'e.g. 3'],
+    WIRES:         ['Wires',               'e.g. 4'],
+    FREQ:          ['Frequency',           'e.g. 60 Hz'],
+    // General options
+    WIRING:        ['Wiring (EEMAC)',       'e.g. MODIFIED'],
+    ENCLOSURE:     ['Enclosure (custom)',   'e.g. SPRINKLERPROOF, WEATHERPROOF'],
+    FINISH:        ['Finish',              'e.g. SAND ENAMEL HS544H75'],
+    ARRANGEMENT:   ['Arrangement',         ''],
+    TERMINALBOARD: ['Master Terminal Brd', 'e.g. BUS LINKS'],
+    // Main device (GENRA001B)
+    MAIN_KA:       ['Main Breaker kA',     'e.g. 65'],
+    // Cable 1
+    CABLE1_INC:    ['Cable 1 — Incl.',    'X'],
+    CABLE1_QTY:    ['Cable 1 — Qty',      '1'],
+    CABLE1_SIZE:   ['Cable 1 — Size',     'e.g. 3/C #8'],
+    // Neutral cable
+    NEUTRAL_INC:   ['Neutral — Incl.',    'X'],
+    NEUTRAL_QTY:   ['Neutral — Qty',      '1'],
+    NEUTRAL_SIZE:  ['Neutral — Size',     'e.g. #8'],
+    // Cable 2
+    CABLE2_INC:    ['Cable 2 — Incl.',    'X'],
+    CABLE2_QTY:    ['Cable 2 — Qty',      '1'],
+    CABLE2_SIZE:   ['Cable 2 — Size',     'e.g. 3/C #8'],
+    // Horizontal bus
+    HORIZ_AMPS:    ['Horiz. Bus Amps',    'e.g. 600'],
+    HORIZ_BUSSES:  ['Horiz. Busses',      'e.g. 1'],
+    HORIZ_FIRST:   ['Horiz. Bus 1st',     '1/4"'],
+    HORIZ_SECOND:  ['Horiz. Bus 2nd',     '1 1/2"'],
+    // Neutral bus
+    NEUT_AMPS:     ['Neutral Bus Amps',   'e.g. 300'],
+    NEUT_FIRST:    ['Neutral Bus 1st',    ''],
+    NEUT_SECOND:   ['Neutral Bus 2nd',    ''],
+    // Vertical bus
+    VERT_AMPS:     ['Vertical Bus Amps',  'e.g. 440'],
+    VERT_FIRST:    ['Vert. Bus 1st',      ''],
+    VERT_SECOND:   ['Vert. Bus 2nd',      ''],
+    // OS / outgoing section
+    OS_AMPS:       ['O/S Bus Amps',       ''],
+    OS_FIRST:      ['O/S Bus 1st',        ''],
+    OS_SECOND:     ['O/S Bus 2nd',        ''],
+    // Ground bus
+    GROUND_FIRST:  ['Ground Bus 1st',     ''],
+    GROUND_SECOND: ['Ground Bus 2nd',     ''],
+    // Protection
+    KA:            ['Disconnect kA',      'e.g. 42'],
+    MOTOR_FUSE:    ['Motor Fuse Class',   'e.g. J(T)'],
+    FEEDER_FUSE:   ['Feeder Fuse Class',  'e.g. J(T)'],
+    // Control
+    CVOLT:         ['Control Voltage',    'e.g. 120V'],
+    SS2_SEL:       ['2-Pos Sel. Legend',  'e.g. HAND/AUTO'],
+    SS3_SEL:       ['3-Pos Sel. Legend',  'e.g. OFF/AUTO/HAND'],
+    FV_PILOT:      ['FV Pilot Voltage',   'e.g. 120'],
+    FV_PILOT_24V:  ['FV Pilot 24V Alt.',  'e.g. 120'],
+    PTT_PILOT:     ['PTT Pilot Voltage',  'e.g. 120'],
+    // Labels
+    NAMEPLATE:     ['Nameplates',         ''],
+    WIREMARKERS:   ['Wiremarkers',        ''],
+    TERMINAL:      ['Terminal Type',      ''],
+  };
+
+  // Checkbox groups: [group label, [[id, short label], ...]]
+  const GD_CB_GROUPS = [
+    ['EEMAC Wiring', [
+      ['EEMAC_IA',       'Class IA'],
+      ['EEMAC_IB',       'Class IB'],
+      ['EEMAC_IC',       'Class IC'],
+      ['EEMAC_IIB',      'Class IIB'],
+      ['EEMAC_IIC',      'Class IIC'],
+      ['EEMAC_MODIFIED', 'Modified'],
+    ]],
+    ['Enclosure (EEMAC)', [
+      ['ENCL_1',         'Type 1'],
+      ['ENCL_1A',        'Type 1A'],
+      ['ENCL_12',        'Type 12'],
+      ['ENCL_2',         'Type 2'],
+      ['ENCL_SPRINKLER', 'Custom'],   // custom type — text value in Enclosure field below
+    ]],
+    ['Enclosure Finish', [
+      ['FINISH_ASA61GREY',   'ASA 61 Grey'],
+      ['FINISH_SAND_ENAMEL', 'Sand Enamel HS544H75'],
+    ]],
+    ['Arrangement', [
+      ['ARRANGE_FOB',    'FOB'],
+      ['ARRANGE_BTB',    'BTB'],
+      ['ARRANGE_CUSTOM', 'Custom'],
+    ]],
+    ['Master Terminal Board', [
+      ['TERMBD_TOP',    'Top'],
+      ['TERMBD_BOT',    'Bottom'],
+      ['TERMBD_CUSTOM', 'Custom'],   // custom location — type value in Master Terminal Brd field below
+    ]],
+    ['Main Lug / Breaker', [
+      ['MAIN_LUG',     'Main Lug'],
+      ['MAIN_BREAKER', 'Main Breaker'],
+      ['MAIN_CUSTOM',  'Custom'],
+    ]],
+    ['System ISC Rating', [
+      ['ISC_18KA', '18 kA'],
+      ['ISC_22KA', '22 kA'],
+      ['ISC_25KA', '25 kA'],
+      ['ISC_35KA', '35 kA'],
+      ['ISC_42KA', '42 kA'],
+      ['ISC_50KA', '50 kA'],
+      ['ISC_65KA', '65 kA'],
+    ]],
+    ['CSA C22.2 Label', [
+      ['CSA_STRUCT_UNIT',  'Structural Unit'],
+      ['CSA_WHERE_APPLIC', 'Where Applicable'],
+      ['CSA_SPECIAL',      'Special'],
+    ]],
+    ['Cable 1 Entry', [
+      ['CABLE1_TOP',   'Top'],
+      ['CABLE1_BOT',   'Bottom'],
+    ]],
+    ['Neutral Cable Entry', [
+      ['NEUTRAL_TOP',  'Top'],
+      ['NEUTRAL_BOT',  'Bottom'],
+    ]],
+    ['Cable 2 Entry', [
+      ['CABLE2_TOP',   'Top'],
+      ['CABLE2_BOT',   'Bottom'],
+    ]],
+    ['Busduct', [
+      ['BUSDUCT_TOP',  'Top'],
+      ['BUSDUCT_BOT',  'Bottom'],
+      ['BUSDUCT_3W',   '3-Wire'],
+      ['BUSDUCT_4W',   '4-Wire'],
+    ]],
+    ['Busbar Bracing', [
+      ['BRACE_22KA',   '22 kA'],
+      ['BRACE_42KA',   '42 kA'],
+      ['BRACE_65KA',   '65 kA'],
+    ]],
+    ['Horizontal Bus Material', [
+      ['HORIZ_AL',       'Aluminum'],
+      ['HORIZ_CU',       'Copper'],
+      ['PLATING_TIN',    'Tin plated'],
+      ['PLATING_SILVER', 'Silver plated'],
+    ]],
+    ['Insulated Bus', [
+      ['INSBUS_HORIZ',  'Horizontal'],
+      ['INSBUS_VERT',   'Vertical'],
+    ]],
+    ['Ground Bus Location', [
+      ['GROUND_TOP',   'Top'],
+      ['GROUND_BOT',   'Bottom'],
+      ['GROUND_VERT',  'Vertical'],
+    ]],
+    ['Disconnect Device', [
+      ['DISC_FUSIBLE',  'Fusible switch'],
+      ['DISC_BREAKER',  'Breaker'],
+      ['DISC_KA',       'kA rated'],
+    ]],
+    ['Motor Fuse Type', [
+      ['MFUSE_FR2_C',   'FR2 / Cl. C'],
+      ['MFUSE_FRI_J',   'FR. I Cl. J'],
+      ['MFUSE_FRI_JT',  'FR. I Cl. J(T)'],
+    ]],
+    ['Feeder Fuse Type', [
+      ['FFUSE_FR2_C',   'FR2 / Cl. C'],
+      ['FFUSE_FRI_J',   'FR. I Cl. J'],
+      ['FFUSE_FRI_JT',  'FR. I Cl. J(T)'],
+    ]],
+    ['Supply Fuses', [
+      ['SUPPLY_ALL',      'All fuses'],
+      ['SUPPLY_FITTINGS', 'With fittings'],
+    ]],
+    ['Control Circuit Voltage', [
+      ['CTRL_120V',  '120 V'],
+      ['CTRL_240V',  '240 V'],
+      ['CTRL_CVOLT', 'Custom'],
+    ]],
+    ['Control Circuit Supply', [
+      ['CSUPPLY_INDIV',    'Individual'],
+      ['CSUPPLY_GROUP',    'Group'],
+      ['CSUPPLY_LINE',     'Line'],
+      ['CSUPPLY_SEPARATE', 'Separate'],
+    ]],
+    ['Nameplates', [
+      ['NP_ENGLISH', 'English'],
+      ['NP_FRENCH',  'French'],
+      ['NP_CUSTOM',  'Custom'],
+    ]],
+    ['Wiremarker Type', [
+      ['WMT_ZMARKERS',   'Z-markers'],
+      ['WMT_HEATSHRINK', 'Heat shrink'],
+      ['WMT_CUSTOM',     'Custom'],
+    ]],
+    ['Wiremarkers — Scope', [
+      ['WM_UNIT_CTRL',  'Unit control'],
+      ['WM_UNIT_PWR',   'Unit power'],
+      ['WM_MTB_CTRL',   'MTB control'],
+      ['WM_MTB_PWR',    'MTB power'],
+      ['WM_INTERWIRING','Inter-wiring'],
+    ]],
+    ['Selector Switch 2-Position', [
+      ['SS2_MAINTAINED', 'Maintained'],
+      ['SS2_SPRING',     'Spring return'],
+    ]],
+    ['Selector Switch 3-Position', [
+      ['SS3_MAINTAINED', 'Maintained'],
+      ['SS3_SPRING',     'Spring return'],
+    ]],
+    ['Pilot Light — FV', [
+      ['PL_120VAC',    '120 VAC'],
+      ['PL_24VAC',     '24 VAC (alt)'],
+    ]],
+    ['Pilot Light — FV PTT', [
+      ['PL_PTT_120VAC', '120 VAC'],
+      ['PL_PTT_24VAC',  '24 VAC'],
+    ]],
+    ['Terminal Type', [
+      ['TERM_8WH1',   '8WH1'],
+      ['TERM_CF4_10', 'CF4-10'],
+      ['TERM_CUSTOM', 'Custom'],
+    ]],
+  ];
+
+  // Field groups for the text attdef section
+  const GD_FIELD_GROUPS = [
+    ['Power Supply',     ['VOLT','PHASE','WIRES','FREQ']],
+    ['General Options',  ['WIRING','ENCLOSURE','FINISH','ARRANGEMENT','TERMINALBOARD']],
+    ['Main Device',      ['MAIN_KA']],
+    ['Cable 1',          ['CABLE1_INC','CABLE1_QTY','CABLE1_SIZE']],
+    ['Neutral Cable',    ['NEUTRAL_INC','NEUTRAL_QTY','NEUTRAL_SIZE']],
+    ['Cable 2',          ['CABLE2_INC','CABLE2_QTY','CABLE2_SIZE']],
+    ['Horizontal Bus',   ['HORIZ_AMPS','HORIZ_BUSSES','HORIZ_FIRST','HORIZ_SECOND']],
+    ['Neutral Bus',      ['NEUT_AMPS','NEUT_FIRST','NEUT_SECOND']],
+    ['Vertical Bus',     ['VERT_AMPS','VERT_FIRST','VERT_SECOND']],
+    ['O/S Bus',          ['OS_AMPS','OS_FIRST','OS_SECOND']],
+    ['Ground Bus',       ['GROUND_FIRST','GROUND_SECOND']],
+    ['Protection',       ['KA','MOTOR_FUSE','FEEDER_FUSE']],
+    ['Control Circuit',  ['CVOLT','SS2_SEL','SS3_SEL','FV_PILOT','FV_PILOT_24V','PTT_PILOT']],
+    ['Labels',           ['NAMEPLATE','WIREMARKERS','TERMINAL']],
+  ];
+
+  function _gdFieldHtml() {
+    return GD_FIELD_GROUPS.map(([grpLabel, keys]) => `
+      <div class="mcc-detail-group-hdr">${grpLabel}</div>
+      ${keys.map(k => {
+        const [label, ph] = GD_FIELDS[k] ?? [k, ''];
+        return `<div class="mcc-form-row">
+          <label>${label}</label>
+          <input id="gd-f-${k}" class="form-input" placeholder="${ph}" />
+        </div>`;
+      }).join('')}
+    `).join('');
+  }
+
+  function _gdCheckboxHtml(checkedSet) {
+    return GD_CB_GROUPS.map(([grpLabel, items]) => `
+      <div class="mcc-detail-group-hdr" style="margin-top:8px">${grpLabel}</div>
+      <div class="gd-cb-group">
+        ${items.map(([id, lbl]) => `
+          <label class="gd-cb-label">
+            <input type="checkbox" class="gd-cb" data-cbid="${id}"
+                   ${checkedSet.has(id) ? 'checked' : ''} />
+            ${lbl}
+          </label>`).join('')}
+      </div>
+    `).join('');
+  }
+
+  async function openGeneralDataForm() {
+    showRp('General Data Sheet', `
+      <div class="mcc-form">
+        <div class="mcc-form-hint" id="gd-hint">
+          Loading from AutoCAD… (General_Data Sheet.dwg must be open)
+        </div>
+        <div id="gd-body"></div>
+      </div>
+    `);
+
+    // Try to read current values
+    let currentFields = {};
+    let currentChecked = new Set();
+    try {
+      setBusy(true);
+      const res = await exec('get_general_data');
+      if (res.success === false) {
+        document.getElementById('gd-hint').className = 'mcc-form-result mcc-err';
+        document.getElementById('gd-hint').textContent = '✗ ' + (res.error ?? 'Failed to read General Data block.');
+        setBusy(false);
+        return;
+      }
+      currentFields  = res.fields   ?? {};
+      currentChecked = new Set(res.checked_boxes ?? []);
+      document.getElementById('gd-hint').textContent =
+        'Edit fields and checkboxes, then click Write to AutoCAD.';
+    } catch (e) {
+      // If AutoCAD / drawing not open, show a warning but still let the user fill in the form
+      document.getElementById('gd-hint').className = 'mcc-form-result mcc-err';
+      document.getElementById('gd-hint').textContent =
+        '⚠ Could not read current values: ' + e.message +
+        '. Fill in the form and write when AutoCAD is ready.';
+    } finally { setBusy(false); }
+
+    // Build the form body
+    document.getElementById('gd-body').innerHTML = `
+      <details class="mcc-form-details" open>
+        <summary>Text Fields</summary>
+        ${_gdFieldHtml()}
+      </details>
+
+      <details class="mcc-form-details" open>
+        <summary>Checkboxes</summary>
+        <div id="gd-cb-container">
+          ${_gdCheckboxHtml(currentChecked)}
+        </div>
+      </details>
+
+      <div class="mcc-form-actions">
+        <button class="btn-primary" id="gd-write">Write to AutoCAD</button>
+        <button class="btn-sm"      id="gd-cancel">Cancel</button>
+      </div>
+      <div class="mcc-form-result" id="gd-res"></div>
+    `;
+
+    // Pre-fill text fields
+    for (const [key] of Object.entries(GD_FIELDS)) {
+      const el = document.getElementById(`gd-f-${key}`);
+      if (el && currentFields[key]) el.value = currentFields[key];
+    }
+
+    document.getElementById('gd-cancel').addEventListener('click', hideRp);
+    document.getElementById('gd-write').addEventListener('click', async () => {
+      const resEl = document.getElementById('gd-res');
+      resEl.className = 'mcc-form-result';
+      resEl.textContent = '';
+
+      // Collect text fields (only non-empty)
+      const fields = {};
+      for (const [key] of Object.entries(GD_FIELDS)) {
+        const el = document.getElementById(`gd-f-${key}`);
+        if (el && el.value.trim()) fields[key] = el.value.trim();
+      }
+
+      // Collect checkboxes (complete desired state)
+      const checkboxes = [];
+      document.querySelectorAll('.gd-cb').forEach(cb => {
+        if (cb.checked) checkboxes.push(cb.dataset.cbid);
+      });
+
+      setBusy(true);
+      try {
+        const res = await exec('set_general_data', {
+          fields:     Object.keys(fields).length     ? fields     : null,
+          checkboxes: checkboxes,
+        });
+        if (res.success) {
+          resEl.className = 'mcc-form-result mcc-ok';
+          const cbMsg = res.checked_added?.length || res.checked_removed?.length
+            ? ` (${res.checked_added?.length ?? 0} checked, ${res.checked_removed?.length ?? 0} cleared)`
+            : '';
+          resEl.textContent = '✓ General Data block updated.' + cbMsg;
+        } else {
+          resEl.className = 'mcc-form-result mcc-err';
+          resEl.textContent = '✗ ' + _friendlyError(res.error ?? 'Write failed.');
+        }
+      } catch (e) {
+        resEl.className = 'mcc-form-result mcc-err';
+        resEl.textContent = '✗ ' + _friendlyError(e.message);
+      } finally { setBusy(false); }
+    });
+  }
+
   // ── Init ────────────────────────────────────────────────────────────────────
   function init() {
     // Toolbar buttons
@@ -1283,16 +1749,28 @@
             ?.addEventListener('click', openAddSectionForm);
     document.getElementById('btn-bulk-add-units')
             ?.addEventListener('click', openBulkAddForm);
+    document.getElementById('btn-general-data')
+            ?.addEventListener('click', openGeneralDataForm);
     document.getElementById('btn-refresh-mcc')
             ?.addEventListener('click', refreshState);
     document.getElementById('btn-save-mcc')
             ?.addEventListener('click', doSaveProject);
+    document.getElementById('btn-load-mcc')
+            ?.addEventListener('click', promptLoadProject);
 
     // Project selector
     document.getElementById('mcc-project-select')?.addEventListener('change', async e => {
       _projectId = e.target.value || null;
-      if (_projectId) await refreshState();
-      else { _projectState = null; renderDiagram(null); setStatus('Select a project.'); }
+      if (_projectId) {
+        // Pick up the name from the option label (stored between the brackets)
+        const opt = e.target.selectedOptions[0];
+        const m = opt?.textContent?.match(/^(.+?)\s+\[/);
+        _projectName = m ? m[1].trim() : _projectId;
+        await refreshState();
+      } else {
+        _projectId = null; _projectName = null;
+        _projectState = null; renderDiagram(null); setStatus('Select a project.');
+      }
     });
 
     // Close right panel

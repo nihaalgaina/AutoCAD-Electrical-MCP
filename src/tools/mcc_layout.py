@@ -321,6 +321,7 @@ def new_mcc_project(
     unitdata_row_y: float = 230.0,
     nameplate_row_x: float = 25.0,
     nameplate_row_y: float = 235.0,
+    project_name: str = "",
 ) -> dict[str, Any]:
     """Start a new MCC project.  MCC_LAYOUT, MCC_UNITDATA and MCC_NAMEPLATE must be open.
 
@@ -334,6 +335,8 @@ def new_mcc_project(
         World coordinates for the first UDATALIN row in MCC_UNITDATA.
     nameplate_row_x/y : float
         World coordinates for the first LAMACOID row in MCC_NAMEPLATE.
+    project_name : str
+        Human-readable name for the project (used as the default save filename).
     """
     try:
         acad           = _get_autocad()
@@ -345,6 +348,7 @@ def new_mcc_project(
 
     project_id = str(uuid.uuid4())[:8]
     _projects[project_id] = {
+        "project_name":            project_name.strip(),
         "layout_doc":              layout_doc,
         "unitdata_doc":            unitdata_doc,
         "nameplate_doc":           nameplate_doc,
@@ -367,6 +371,7 @@ def new_mcc_project(
     return {
         "success":         True,
         "project_id":      project_id,
+        "project_name":    project_name.strip(),
         "layout_doc":      layout_doc.Name,
         "unitdata_doc":    unitdata_doc.Name,
         "nameplate_doc":   nameplate_doc.Name,
@@ -2279,12 +2284,59 @@ def list_projects() -> dict[str, Any]:
         "projects": [
             {
                 "project_id":     pid,
+                "project_name":   p.get("project_name", ""),
                 "total_sections": len(p["sections"]),
                 "total_units":    len(p["unit_index"]),
             }
             for pid, p in _projects.items()
         ],
     }
+
+
+def list_saved_projects(
+    directory: str | None = None,
+) -> dict[str, Any]:
+    """Scan the projects folder and return metadata for every saved .json file.
+
+    Parameters
+    ----------
+    directory : str | None
+        Folder to scan.  Defaults to ``projects/`` relative to cwd.
+
+    Returns
+    -------
+    dict with ``success`` and ``projects`` list, each entry having:
+    ``filepath``, ``project_id``, ``project_name``, ``saved_at``,
+    ``total_sections``, ``total_units``.
+    """
+    import json
+    import os
+
+    folder = directory or "projects"
+    if not os.path.isdir(folder):
+        return {"success": True, "projects": []}
+
+    results = []
+    for fname in sorted(os.listdir(folder)):
+        if not fname.endswith(".json"):
+            continue
+        fpath = os.path.join(folder, fname)
+        try:
+            with open(fpath, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            results.append({
+                "filepath":       fpath,
+                "project_id":     data.get("project_id", ""),
+                "project_name":   data.get("project_name", ""),
+                "saved_at":       data.get("saved_at", ""),
+                "total_sections": len(data.get("sections", {})),
+                "total_units":    len(data.get("unit_index", {})),
+            })
+        except Exception:
+            # Skip unreadable files silently
+            continue
+
+    return {"success": True, "projects": results}
 
 
 # ---------------------------------------------------------------------------
@@ -2323,7 +2375,11 @@ def save_project(
 
     if filepath is None:
         os.makedirs("projects", exist_ok=True)
-        filepath = os.path.join("projects", f"{project_id}.json")
+        # Prefer a human-readable name; fall back to the UUID-fragment ID
+        safe_name = proj.get("project_name", "").strip()
+        safe_name = "".join(c for c in safe_name if c.isalnum() or c in " _-").strip()
+        filename = f"{safe_name}.json" if safe_name else f"{project_id}.json"
+        filepath = os.path.join("projects", filename)
 
     # Build serialisable section list (exclude COM objects, keep all data fields)
     _COM_KEYS = {"layout_doc", "unitdata_doc"}
@@ -2333,6 +2389,7 @@ def save_project(
 
     data: dict[str, Any] = {
         "project_id":       project_id,
+        "project_name":     proj.get("project_name", ""),
         "saved_at":         datetime.now(timezone.utc).isoformat(),
         "layout_origin_x":  proj["section_cursor_x"] - sum(
             s["width_units"] for s in proj["sections"].values()
@@ -2420,6 +2477,7 @@ def load_project(
 
     # Rebuild the in-memory project dict
     proj: dict[str, Any] = {
+        "project_name":            data.get("project_name", ""),
         "layout_doc":              layout_doc,
         "unitdata_doc":            unitdata_doc,
         "nameplate_doc":           nameplate_doc,
@@ -2451,9 +2509,10 @@ def load_project(
     _projects[project_id] = proj
 
     return {
-        "success":    True,
-        "project_id": project_id,
-        "reconnected": reconnect,
-        "sections":   list(proj["sections"].keys()),
-        "units":      list(proj["unit_index"].keys()),
+        "success":      True,
+        "project_id":   project_id,
+        "project_name": proj.get("project_name", ""),
+        "reconnected":  reconnect,
+        "sections":     list(proj["sections"].keys()),
+        "units":        list(proj["unit_index"].keys()),
     }

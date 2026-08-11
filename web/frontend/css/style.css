@@ -1859,6 +1859,32 @@ a { color: var(--accent); text-decoration: none; }
   border: 1px solid rgba(240,83,73,.25);
 }
 
+/* ── General Data checkbox grid ──────────────────────────────────────── */
+.gd-cb-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 4px 0 6px 0;
+}
+.gd-cb-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+.gd-cb-label:hover { color: var(--text-primary); }
+.gd-cb {
+  width: 13px;
+  height: 13px;
+  accent-color: var(--accent, #3b82f6);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 /* ── Status bar ───────────────────────────────────────────────────────── */
 .mcc-statusbar {
   padding: 6px 16px;

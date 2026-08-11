@@ -5,6 +5,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.7.0] — General Data Block Support (August 11, 2026)
+
+### Added
+- **`src/tools/mcc_general_data.py`** — full backend for the `GENRA001B` block
+  in `General_Data Sheet.dwg`.
+  - `get_general_data()` — reads all 46 attribute values and returns the list of
+    currently checked checkbox IDs by scanning XData tags in model space.
+  - `set_general_data(fields, checkboxes)` — writes attribute fields by index
+    (handles duplicate tag names correctly) and diffs the desired checkbox state
+    against the current one: missing hatches are inserted as non-associative
+    SOLID fills; extra hatches are deleted via their XData tag.
+  - `list_checkboxes()` — returns the complete CHECKBOXES dictionary for discovery.
+  - Checkbox hatches are tagged with XData (`REGAPP="MCC_GENDATA"`, value = checkbox ID)
+    for reliable retrieval and deletion without relying on position matching.
+  - Block-local → model-space coordinate transform accounts for insertion point,
+    scale, and rotation of the `GENRA001B` block reference.
+  - All 96 checkbox bounding boxes and 46 attdef names derived from `genra001b_dump.json`
+    (produced by `scripts/dump_genra001.py --block GENRA001B`).
+  - New sections vs old Genra001: Main Lug/Breaker row, System ISC rating (7 options:
+    18/22/25/35/42/50/65 kA), CSA C22.2 label (Structural Unit / Where Applicable /
+    Special), and an alternate 24V FV pilot light attdef (`FV_PILOT_24V`).
+- **General Data GUI panel** in the MCC configurator (`mcc.js` + `index.html`).
+  - "General Data" toolbar button opens the slide-in right panel.
+  - Text fields section: all 46 attdefs in 14 groups (Power Supply, General Options,
+    Main Device, Cable, Bus, Protection, Control Circuit, Labels, etc.).
+  - Checkboxes section: 96 checkboxes in 28 groups including the three new
+    GENRA001B-only groups (Main Lug/Breaker, System ISC Rating, CSA C22.2 Label).
+    Rendered as styled `<input type="checkbox">` elements with compact wrapping layout.
+  - On open, current values and checked state are read from AutoCAD automatically.
+  - "Write to AutoCAD" collects all changes and calls `set_general_data` in one shot.
+- Registered `get_general_data`, `set_general_data`, `list_checkboxes` in
+  `web/backend/chat.py` TOOL_REGISTRY under the MCC category — AI chat can now
+  read and write the General Data sheet via natural language.
+- `scripts/dump_genra001.py` (v5) — HandleToObject-based diagnostic with `--block`,
+  `--doc`, `--out` argparse arguments; lists available blocks when target is not found.
+
+---
+
 ## [0.6.0] — COM Reconnect on Large Block Insert (August 10, 2026)
 
 ### Fixed

@@ -26,7 +26,7 @@ from src.config import get_config
 from src.providers import get_provider
 from src.tools import drawing, drawing3d, electrical, wires, components, reports
 from src.tools import project as proj
-from src.tools import mcc_layout, mcc_blocks
+from src.tools import mcc_layout, mcc_blocks, mcc_general_data
 from web.backend.state import add_log, add_history
 
 # Re-use the single COM worker thread from app (imported lazily to avoid
@@ -449,6 +449,12 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
         "params": {},
         "category": "MCC",
     },
+    "list_saved_projects": {
+        "func": mcc_layout.list_saved_projects,
+        "description": "Scan the projects/ folder on disk and return metadata (filepath, project_id, project_name, saved_at, section/unit counts) for every saved .json file.",
+        "params": {"directory": "str | None"},
+        "category": "MCC",
+    },
     "save_project": {
         "func": mcc_layout.save_project,
         "description": "Save an MCC project to a JSON file. Defaults to projects/<project_id>.json.",
@@ -470,6 +476,41 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "list_mcc_blocks": {
         "func": mcc_blocks.list_mcc_blocks,
         "description": "Return all available MCC section frames and unit blocks from the block catalog.",
+        "params": {},
+        "category": "MCC",
+    },
+    # ── MCC General Data ────────────────────────────────────────────────
+    "get_general_data": {
+        "func": mcc_general_data.get_general_data,
+        "description": (
+            "Read the current state of the Genra001 block in General_Data Sheet.dwg. "
+            "Returns all 44 attribute values and a list of checked checkbox IDs. "
+            "General_Data Sheet.dwg must be open in AutoCAD."
+        ),
+        "params": {},
+        "category": "MCC",
+    },
+    "set_general_data": {
+        "func": mcc_general_data.set_general_data,
+        "description": (
+            "Write fields and/or checkboxes to the Genra001 block in General_Data Sheet.dwg. "
+            "'fields' is a dict of attdef_name→value (any of the 44 ATTDEF_ORDER names). "
+            "'checkboxes' is the complete desired checked state as a list of checkbox_ids — "
+            "boxes in the list are filled, boxes not in the list are cleared. "
+            "General_Data Sheet.dwg must be open in AutoCAD."
+        ),
+        "params": {
+            "fields":     "dict | None — attdef_name→value pairs to update (omit or null to skip)",
+            "checkboxes": "list | None — complete desired checked checkbox_ids (omit or null to skip)",
+        },
+        "category": "MCC",
+    },
+    "list_checkboxes": {
+        "func": mcc_general_data.list_checkboxes,
+        "description": (
+            "Return the full list of checkbox IDs understood by set_general_data, "
+            "with their block-local bounding-box coordinates. Useful for discovery."
+        ),
         "params": {},
         "category": "MCC",
     },

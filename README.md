@@ -2,8 +2,8 @@
 
 > MCP server + local AI web dashboard for **AutoCAD Electrical 2027** - control AutoCAD with plain language via Claude, Ollama, or any OpenAI compatible models.
 
-> This fork was designed for **Electrical Controls Manufacturing** (ECM), aimed at adding support for their Motor Control Center (MCC) products, as well as planned support for
-variable frequency drives (VFDs), soft starters, breaker panels, and other products. The MCC configurator will not work unless MCC_LAYOUT, MCC_UNITDATA, and MCC_NAMEPLATE.dwg are open in AutoCAD, and the required CAD blocks are located in the filepath written in .env. The original repo and its README.md are available at https://github.com/Igualguana/AUTOCAD-ELECTRICAL-MCP.
+> This fork is designed for **Electrical Controls Manufacturing** (ECM), aimed at adding support for their Motor Control Center (MCC) products, as well as planned support for
+variable frequency drives (VFDs), soft starters, breaker panels, and other products. The MCC configurator **will not work** unless MCC_LAYOUT, MCC_UNITDATA, and MCC_NAMEPLATE.dwg are open in AutoCAD, and the required CAD blocks are located in the filepath written in .env. The original repo is available at https://github.com/Igualguana/AUTOCAD-ELECTRICAL-MCP.
 
 ---
 
