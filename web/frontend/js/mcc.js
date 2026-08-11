@@ -1384,7 +1384,7 @@
     ARRANGEMENT:   ['Arrangement',         ''],
     TERMINALBOARD: ['Master Terminal Brd', 'e.g. BUS LINKS'],
     // Main device (GENRA001B)
-    MAIN_KA:       ['Main Breaker kA',     'e.g. 65'],
+    MAIN_KA:       ['Master Terminal Brd Line 2', ''],
     // Cable 1
     CABLE1_INC:    ['Cable 1 — Incl.',    'X'],
     CABLE1_QTY:    ['Cable 1 — Qty',      '1'],
@@ -1595,8 +1595,7 @@
   // Field groups for the text attdef section
   const GD_FIELD_GROUPS = [
     ['Power Supply',     ['VOLT','PHASE','WIRES','FREQ']],
-    ['General Options',  ['WIRING','ENCLOSURE','FINISH','ARRANGEMENT','TERMINALBOARD']],
-    ['Main Device',      ['MAIN_KA']],
+    ['General Options',  ['WIRING','ENCLOSURE','FINISH','ARRANGEMENT','TERMINALBOARD','MAIN_KA']],
     ['Cable 1',          ['CABLE1_INC','CABLE1_QTY','CABLE1_SIZE']],
     ['Neutral Cable',    ['NEUTRAL_INC','NEUTRAL_QTY','NEUTRAL_SIZE']],
     ['Cable 2',          ['CABLE2_INC','CABLE2_QTY','CABLE2_SIZE']],

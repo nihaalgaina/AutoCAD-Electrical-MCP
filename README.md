@@ -3,7 +3,7 @@
 > MCP server + local AI web dashboard for **AutoCAD Electrical 2027** - control AutoCAD with plain language via Claude, Ollama, or any OpenAI compatible models.
 
 > This fork is designed for **Electrical Controls Manufacturing** (ECM), aimed at adding support for their Motor Control Center (MCC) products, as well as planned support for
-variable frequency drives (VFDs), soft starters, breaker panels, and other products. The MCC configurator **will not work** unless MCC_LAYOUT, MCC_UNITDATA, and MCC_NAMEPLATE.dwg are open in AutoCAD, and the required CAD blocks are located in the filepath written in .env. The original repo is available at https://github.com/Igualguana/AUTOCAD-ELECTRICAL-MCP.
+variable frequency drives (VFDs), soft starters, breaker panels, and other products. The MCC configurator **will not work** unless MCC_LAYOUT, MCC_UNITDATA, and MCC_NAMEPLATE.dwg are open in AutoCAD, and the required CAD blocks are located in the filepath written in .env. Additionally, the general data configurator panel **will not work** unless the 'General_Data Sheet.dwg' file is open and contains the 'GENRA001B' block. The original repo used for this project is available at https://github.com/Igualguana/AUTOCAD-ELECTRICAL-MCP.
 
 ---
 
@@ -16,16 +16,18 @@ The MCC Builder requires three template drawings to be open in AutoCAD before yo
 | `MCC_LAYOUT.dwg` | Receives section frames and unit blocks |
 | `MCC_UNITDATA.dwg` | Receives `UDATALIN` data rows |
 | `MCC_NAMEPLATE.dwg` | Receives `LAMACOID` nameplate rows |
+| `General_Data Sheet.dwg` | (Optional) Receives `GENRA001B` data rows |
 
 **Steps:**
 
 1. Set `MCC_BLOCK_LIBRARY` in your `.env` to the folder containing these files (and all unit block DWGs).
 2. Open `MCC_LAYOUT.dwg`, `MCC_UNITDATA.dwg`, and `MCC_NAMEPLATE.dwg` in AutoCAD Electrical.
-3. Start the web server: `python start_web.py`
-4. Open `http://127.0.0.1:8080` and click **MCC** in the sidebar.
-5. Click **New Project** — the tool will connect to the three open drawings automatically.
+3. (Optional) Open `General_Data Sheet.dwg` in AutoCAD Electrical.
+4. Start the web server: `python start_web.py`
+5. Open `http://127.0.0.1:8080` and click **MCC** in the sidebar.
+6. Click **New Project** — the tool will connect to the three open drawings automatically.
 
-> If you see *"MCC_LAYOUT.dwg is not open"* when creating a project, go back to step 2 and make sure all three files are open in AutoCAD before clicking New Project.
+> If you see *"MCC_LAYOUT.dwg is not open"* when creating a project, go back to step 2 and make sure the required files are open in AutoCAD before clicking New Project.
 
 ---
 
