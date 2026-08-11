@@ -1501,7 +1501,7 @@ a { color: var(--accent); text-decoration: none; }
 
 /* ── Drop zones ─────────────────────────────────────────────────────────── */
 .mcc-drop-zone {
-  height: 3px;
+  height: 0;          /* collapsed by default so unit heights sum exactly to capacity */
   flex-shrink: 0;
   margin: 0 6px;
   border-radius: 2px;

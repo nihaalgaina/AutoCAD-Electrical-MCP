@@ -57,17 +57,33 @@ python start_web.py --host 127.0.0.1 --port 8080 --no-browser
 
 ## Installation
 
+### Option A — One-click installer (recommended)
+
+1. [Download or clone the repo](#) — if you don't have Git yet, download the ZIP from GitHub and unzip it.
+2. Open the folder, right-click **`install.bat`** → **Run as administrator**.
+
+The script will:
+- Install **Python 3.11** via `winget` if it isn't already on your machine
+- Install **Git** via `winget` if it isn't already on your machine
+- Install all required Python libraries automatically
+- Copy `.env.example` → `.env` so you can fill in your settings
+
+> `winget` is built into Windows 10 (1709+) and Windows 11. If your machine doesn't have it,
+> install [Python 3.11+](https://www.python.org/downloads/) and [Git](https://git-scm.com/download/win)
+> manually, then run **Option B** below.
+
+### Option B — Manual install
+
 ```bash
 # 1. Clone
-git clone https://github.com/nihaalgaina/AutoCAD-Electrical-MCP
-cd AutoCAD-Electrical-MCP
+git clone https://github.com/nihaalgaina/AUTOCAD-ELECTRICAL-MCP
+cd AUTOCAD-ELECTRICAL-MCP
 
 # 2. Install dependencies
-pip install -e .
-
-# 3. Configure environment
-cp .env.example .env
+python scripts/install.py
 ```
+
+### Configure your environment
 
 Open `.env` in any text editor and fill in the values for your setup:
 

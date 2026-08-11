@@ -111,6 +111,23 @@ def _is_rpc_rejected(exc: Exception) -> bool:
     return "80010001" in s or "-2147418111" in s
 
 
+def _is_rpc_disconnected(exc: Exception) -> bool:
+    """Return True if exc is RPC_E_DISCONNECTED (0x80010108 / -2147417848).
+
+    This happens when AutoCAD's COM proxy becomes stale — typically after a
+    long-running operation (e.g. inserting a large block) causes the IPC
+    connection to time out.  The fix is to re-acquire the Application and
+    Document COM objects rather than retrying with the stale reference.
+    """
+    try:
+        if exc.args and exc.args[0] in (-2147417848, 0x80010108):
+            return True
+    except Exception:
+        pass
+    s = str(exc)
+    return "80010108" in s or "-2147417848" in s
+
+
 def _wait_quiescent(doc, timeout_s: float = 25.0) -> None:
     """Poll IsQuiescent without switching the active document.
 
@@ -152,26 +169,51 @@ def _wait_quiescent(doc, timeout_s: float = 25.0) -> None:
 def _insert(doc, block_name_or_path: str, x: float, y: float,
             x_scale: float = 1.0, y_scale: float = 1.0,
             rotation_deg: float = 0.0):
-    """Insert a block into doc.ModelSpace with retry on RPC_E_CALL_REJECTED.
+    """Insert a block into doc.ModelSpace with retry on RPC errors.
 
-    On rejection we sleep and retry WITHOUT re-calling _activate().
-    Re-activating inside the retry loop causes an additional tab-switch on
-    every attempt, which can itself trigger a regen on the previously-active
-    document and keep AutoCAD perpetually busy.  A plain sleep lets AutoCAD
-    drain its work queue on its own before we try again.
+    Handles two COM error types:
+    - RPC_E_CALL_REJECTED (0x80010001): AutoCAD is busy — sleep and retry with
+      the existing doc reference.
+    - RPC_E_DISCONNECTED (0x80010108): COM proxy is stale (often caused by
+      AutoCAD regenerating after a large block insert) — re-acquire the
+      Application + Document COM objects from scratch, then retry.
+
+    We do NOT call _activate() inside the retry loop: each tab-switch can
+    trigger a regen on the backgrounded document, keeping AutoCAD perpetually
+    busy.
     """
     import time
     import win32com.client as win32
     import pythoncom
-    ms  = doc.ModelSpace
-    pt  = win32.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_R8, [x, y, 0.0])
+    # Capture the document name before entering the retry loop — doc.Name may
+    # become unreadable if the COM proxy goes stale mid-loop.
+    try:
+        _doc_name = doc.Name  # e.g. "MCC_LAYOUT.dwg"
+        _doc_fragment = _doc_name.upper().replace(".DWG", "")  # e.g. "MCC_LAYOUT"
+    except Exception:
+        _doc_fragment = None
+    _doc = doc
+    ms   = _doc.ModelSpace
+    pt   = win32.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_R8, [x, y, 0.0])
     for attempt in range(20):
         try:
             return ms.InsertBlock(pt, block_name_or_path,
                                   x_scale, y_scale, 1.0,
                                   math.radians(rotation_deg))
         except Exception as exc:
-            if _is_rpc_rejected(exc) and attempt < 19:
+            if _is_rpc_disconnected(exc) and attempt < 19:
+                # COM proxy went stale (e.g. AutoCAD regen after large block
+                # insert).  Re-acquire the Application + Document objects from
+                # scratch before retrying.
+                time.sleep(2.0 + attempt * 1.0)
+                if _doc_fragment:
+                    try:
+                        _acad = _get_autocad()
+                        _doc  = _get_doc(_acad, _doc_fragment)
+                        ms    = _doc.ModelSpace
+                    except Exception:
+                        pass  # Let the next attempt raise naturally.
+            elif _is_rpc_rejected(exc) and attempt < 19:
                 time.sleep(1.0 + attempt * 0.5)   # 1.0 s → 1.5 → 2.0 … → 10.5 s
             else:
                 raise

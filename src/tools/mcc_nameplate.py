@@ -50,22 +50,55 @@ def _is_rpc_rejected(exc: Exception) -> bool:
     return "80010001" in s or "-2147418111" in s
 
 
+def _is_rpc_disconnected(exc: Exception) -> bool:
+    """Return True if exc is RPC_E_DISCONNECTED (0x80010108 / -2147417848)."""
+    try:
+        if exc.args and exc.args[0] in (-2147417848, 0x80010108):
+            return True
+    except Exception:
+        pass
+    s = str(exc)
+    return "80010108" in s or "-2147417848" in s
+
+
 def _insert(doc, block_name_or_path: str, x: float, y: float,
             x_scale: float = 1.0, y_scale: float = 1.0,
             rotation_deg: float = 0.0):
-    """Insert a block into doc.ModelSpace with retry on RPC_E_CALL_REJECTED."""
+    """Insert a block into doc.ModelSpace with retry on RPC errors.
+
+    Handles RPC_E_CALL_REJECTED (busy) with sleep-and-retry, and
+    RPC_E_DISCONNECTED (stale proxy) with COM re-acquire-and-retry.
+    """
     import time
     import win32com.client as win32
     import pythoncom
-    ms  = doc.ModelSpace
-    pt  = win32.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_R8, [x, y, 0.0])
+    try:
+        _doc_name = doc.Name.upper().replace(".DWG", "")
+    except Exception:
+        _doc_name = None
+    _doc = doc
+    ms   = _doc.ModelSpace
+    pt   = win32.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_R8, [x, y, 0.0])
     for attempt in range(20):
         try:
             return ms.InsertBlock(pt, block_name_or_path,
                                   x_scale, y_scale, 1.0,
                                   math.radians(rotation_deg))
         except Exception as exc:
-            if _is_rpc_rejected(exc) and attempt < 19:
+            if _is_rpc_disconnected(exc) and attempt < 19:
+                time.sleep(2.0 + attempt * 1.0)
+                if _doc_name:
+                    try:
+                        _acad = win32.GetActiveObject("AutoCAD.Application")
+                        for i in range(_acad.Documents.Count):
+                            d = _acad.Documents.Item(i)
+                            if d.Name.upper().replace(".DWG", "") == _doc_name:
+                                _doc = d
+                                ms   = _doc.ModelSpace
+                                break
+                    except Exception:
+                        pass
+            elif _is_rpc_rejected(exc) and attempt < 19:
                 time.sleep(1.0 + attempt * 0.5)
             else:
                 raise

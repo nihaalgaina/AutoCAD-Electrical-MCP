@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.0] — COM Reconnect on Large Block Insert (August 10, 2026)
+
+### Fixed
+- **RPC_E_DISCONNECTED error inserting large blocks** (e.g. 500mm 24-mod /
+  UNIT5240) — error code `-2147417848` (`0x80010108`).  AutoCAD's COM proxy
+  can go stale after a long-running insert triggers an internal regen.  Both
+  `mcc_layout._insert` and `mcc_nameplate._insert` now detect this error,
+  re-acquire the AutoCAD Application + Document COM objects from scratch, and
+  retry the insert — up to 20 attempts with a 2 s+ back-off between each.
+
+---
+
 ## [0.5.0] — MCC Nameplate Fixes (August 10, 2026)
 
 ### Added

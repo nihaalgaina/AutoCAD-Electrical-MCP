@@ -8,12 +8,10 @@
   const MOD_PX = 18;   // pixels per 1 module height in the diagram
 
   // ── Minimum mod heights per starter type ──────────────────────────────────
-  // Change these values here to adjust the enforced minimums.
+  // Only types with a genuine lower bound are listed here.
+  // VFD, SS, and CUSTOM blocks exist at all sizes 1–24, so they have no entry.
   const MIN_MOD = {
-    VFD:       12,
-    VVVF:      12,
-    SS:        10,
-    SOFTSTART: 10,
+    // (none currently enforced — remove this comment and add entries if needed)
   };
 
   // ── State ─────────────────────────────────────────────────────────────────
@@ -199,6 +197,10 @@
     `;
 
     const unitsDiv = col.querySelector('.mcc-col-units');
+    // Pin height to exactly capacity × MOD_PX so all sections with the same
+    // capacity are identical in height regardless of unit count or borders.
+    unitsDiv.style.height   = (capacity * MOD_PX) + 'px';
+    unitsDiv.style.overflow = 'hidden';
 
     // Drop zone above unit[0]
     unitsDiv.appendChild(_makeDz(secId, 0));
@@ -359,7 +361,14 @@
   }
 
   function _MOD_OPTS(def = 4) {
-    return [1,2,3,3.5,4,5,6,7,8,10,12,14,21].map(m =>
+    // Full range 1–24 in whole-number steps, with 3.5 inserted after 3
+    // (used by feeder blocks).  All sizes have corresponding DWG blocks.
+    const sizes = [];
+    for (let m = 1; m <= 24; m++) {
+      sizes.push(m);
+      if (m === 3) sizes.push(3.5);
+    }
+    return sizes.map(m =>
       `<option value="${m}"${m === def ? ' selected' : ''}>${m} mod</option>`
     ).join('');
   }
@@ -1027,12 +1036,14 @@
       if (customEl) customEl.style.display  = isCustom ? '' : 'none';
       if (detailsEl) detailsEl.style.display = isDual  ? 'none' : '';
 
-      // 3-mod rule: units < 3 mod can only be SPACE
+      // 3-mod rule: standard starters need ≥ 3 mod.
+      // VFD, SS, CUSTOM, SPACE have blocks at all sizes and are always enabled.
+      const _FREE_SIZE_TYPES = new Set(['VFD','VVVF','SS','SOFTSTART','CUSTOM','SPACE']);
       const tooSmallForStarter = currentMods < 3;
       for (const opt of typeEl.options) {
-        opt.disabled = tooSmallForStarter && opt.value !== 'SPACE';
+        opt.disabled = tooSmallForStarter && !_FREE_SIZE_TYPES.has(opt.value);
       }
-      if (tooSmallForStarter && currentType !== 'SPACE') {
+      if (tooSmallForStarter && !_FREE_SIZE_TYPES.has(currentType)) {
         typeEl.value = 'SPACE';
       }
 
@@ -1068,11 +1079,13 @@
       const utype = document.getElementById('f-utype').value;
       const umods = parseFloat(document.getElementById('f-umods').value);
 
-      // Guard: enforce 3-mod rule and per-type minimums
-      if (umods < 3 && utype !== 'SPACE') {
+      // Guard: enforce 3-mod rule for standard starters.
+      // VFD, SS, and CUSTOM have blocks at all sizes so they bypass this check.
+      const _FREE_SIZE = ['VFD','VVVF','SS','SOFTSTART','CUSTOM','SPACE'];
+      if (umods < 3 && !_FREE_SIZE.includes(utype)) {
         const resEl = document.getElementById('f-unit-res');
         resEl.className = 'mcc-form-result mcc-err';
-        resEl.textContent = `✗ Units under 3 mod must be type SPACE.`;
+        resEl.textContent = `✗ Units under 3 mod must be type SPACE (or VFD / SS / CUSTOM).`;
         return;
       }
       const minRequired = MIN_MOD[utype] ?? 0;
