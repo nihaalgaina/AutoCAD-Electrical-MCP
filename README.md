@@ -1,8 +1,8 @@
-# AutoCAD Electrical MCP (ECM)
+# AutoCAD Electrical Interface (ECM)
 
-> MCP server + local AI web dashboard for **AutoCAD Electrical 2027** - control AutoCAD with plain language via Claude, Ollama, or any OpenAI compatible models.
+> Local web dashboard for **AutoCAD Electrical 2027** - control AutoCAD with plain language using Claude, Ollama or any OpenAI compatible models. Comes with a motor control center (MCC) configurator panel to edit or create complete MCC drawing packages.
 
-> This fork is designed for **Electrical Controls Manufacturing** (ECM), aimed at adding support for their Motor Control Center (MCC) products, as well as planned support for
+> This app is designed for **Electrical Controls Manufacturing** (ECM), aimed at adding support for their Motor Control Center (MCC) products, as well as planned future support for
 variable frequency drives (VFDs), soft starters, breaker panels, and other products. The MCC configurator **will not work** unless MCC_LAYOUT, MCC_UNITDATA, and MCC_NAMEPLATE.dwg are open in AutoCAD, and the required CAD blocks are located in the filepath written in .env. Additionally, the general data configurator panel **will not work** unless the 'General_Data Sheet.dwg' file is open and contains the 'GENRA001B' block. The original repo used for this project is available at https://github.com/Igualguana/AUTOCAD-ELECTRICAL-MCP.
 
 ---
@@ -78,8 +78,8 @@ The script will:
 
 ```bash
 # 1. Clone
-git clone https://github.com/nihaalgaina/AUTOCAD-ELECTRICAL-MCP
-cd AUTOCAD-ELECTRICAL-MCP
+git clone https://github.com/nihaalgaina/AutoCAD-Electrical-Interface-ECM
+cd AutoCAD-Electrical-Interface-ECM
 
 # 2. Install dependencies
 python scripts/install.py
@@ -121,10 +121,21 @@ ollama pull qwen2.5:7b         # better quality, needs ~6 GB RAM
 
 ---
 
+## License
+
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
+
+You are free to use, modify, and distribute this software. Any modified version run as a network service must make its full source code available to users of that service.
+
+See the [LICENSE](LICENSE) file for the complete license text.
+
+---
+
 ## Author (Original Repository)
 
 **Randy Igualguana**  
 Copyright © 2026 Randy Igualguana
+Original Repo: https://github.com/Igualguana/AUTOCAD-ELECTRICAL-MCP
 
 ---
 
