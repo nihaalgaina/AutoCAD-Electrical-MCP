@@ -435,7 +435,7 @@
 
       ${hdr('Control Relays')}
       ${row('CR Qty', 'ucrqty', 'qty')}
-      ${row('NO Contacts', 'uno', 'qty')}
+      ${row('NO Contacts', 'ucr-no', 'qty')}
       ${row('NC Contacts', 'unc', 'qty')}
       ${row('PTC Aux', 'uptcaux', 'qty')}
       ${row('Hour Meters', 'uhour', 'qty')}
@@ -512,7 +512,7 @@
       ['uoff',     'OFF',            false],
       // control relays
       ['ucrqty',   'CR-QTY',         false],
-      ['uno',      'NO',             false],
+      ['ucr-no',   'NO',             false],
       ['unc',      'NC',             false],
       ['uptcaux',  'PTC-AUX',        false],
       ['uhour',    'HOUR',           false],
@@ -553,7 +553,7 @@
       'ustop','ustart','uptc','upos','uss',
       'uplred','uplgrn','uplylw','uplwht',
       'utmrqty','uon','uoff',
-      'ucrqty','uno','unc','uptcaux','uhour',
+      'ucrqty','ucr-no','unc','uptcaux','uhour',
       'uvm','uam','ucts','uxmerph','ukva','upnlph','upnlcct','udwg',
       'unpl1','unpl2','unpl3','unpl4','unpqty','unpsz','unpstyle',
     ];
@@ -673,7 +673,7 @@
       'e-uon':      cur('ON'),
       'e-uoff':     cur('OFF'),
       'e-ucrqty':   cur('CR-QTY'),
-      'e-uno':      cur('NO'),
+      'e-ucr-no':   cur('NO'),
       'e-unc':      cur('NC'),
       'e-uptcaux':  cur('PTC-AUX'),
       'e-uhour':    cur('HOUR'),
@@ -1146,21 +1146,91 @@
     });
   }
 
+  // ── Drawing assignment helpers ─────────────────────────────────────────────
+  // Build <option> elements from a list of {name, full_path} drawing objects.
+  function _dwgOptions(drawings, selectedName = '') {
+    const blank = `<option value="">— select drawing —</option>`;
+    const opts  = drawings.map(d => {
+      const sel = d.name === selectedName ? ' selected' : '';
+      return `<option value="${d.name}"${sel}>${d.name}</option>`;
+    }).join('');
+    return blank + opts;
+  }
+
+  // Render 4 drawing-assignment rows into a container element.
+  // roles: [{key, label}], drawings: [{name, full_path}], currentMap: {}
+  function _renderDwgAssign(container, drawings, currentMap = {}) {
+    const roles = [
+      { key: 'layout',       label: 'Layout sheet'       },
+      { key: 'unitdata',     label: 'Unit data sheet'    },
+      { key: 'nameplate',    label: 'Nameplate sheet'    },
+      { key: 'general_data', label: 'General data sheet (optional)' },
+    ];
+    container.innerHTML = roles.map(r => `
+      <div class="mcc-form-row">
+        <label>${r.label}</label>
+        <select id="f-dwg-${r.key}" class="form-input" style="width:100%">
+          ${_dwgOptions(drawings, currentMap[r.key] || '')}
+        </select>
+      </div>
+    `).join('');
+  }
+
+  // Collect dwg_map from the 4 selects; returns null + shows error if required roles blank.
+  // layout/unitdata/nameplate are required; general_data is optional (can be left unset).
+  function _collectDwgMap(errEl) {
+    const required = ['layout', 'unitdata', 'nameplate'];
+    const optional = ['general_data'];
+    const map = {};
+    for (const r of required) {
+      const val = document.getElementById(`f-dwg-${r}`)?.value || '';
+      if (!val) {
+        if (errEl) { errEl.className = 'mcc-form-result mcc-err'; errEl.textContent = `Please assign a drawing for "${r}".`; }
+        return null;
+      }
+      map[r] = val;
+    }
+    for (const r of optional) {
+      const val = document.getElementById(`f-dwg-${r}`)?.value || '';
+      if (val) map[r] = val;  // only include if selected
+    }
+    return map;
+  }
+
   // ── New Project dialog ─────────────────────────────────────────────────────
-  function promptNewProject() {
+  async function promptNewProject() {
+    // Fetch open drawings first so we can populate dropdowns immediately.
+    let drawings = [];
+    try {
+      const r = await exec('list_open_drawings', {});
+      if (r.success) drawings = r.drawings || [];
+    } catch (_) {}
+
+    const noDrawingsHint = drawings.length === 0
+      ? `<p class="mcc-form-hint" style="color:var(--color-error,#c00)">
+           ⚠ No drawings found open in AutoCAD.  Open your drawings first, then click ↻ Refresh.
+         </p>`
+      : `<p class="mcc-form-hint">
+           Select which open drawing corresponds to each sheet.
+           Click ↻ Refresh if you just opened a drawing.
+         </p>`;
+
     showRp('New MCC Project', `
       <div class="mcc-form">
-        <p class="mcc-form-hint">
-          <b>MCC_LAYOUT.dwg</b>, <b>MCC_UNITDATA.dwg</b>, and <b>MCC_NAMEPLATE.dwg</b> must all be open in AutoCAD before starting.
-        </p>
-
         <div class="mcc-form-section-label">Project</div>
         <div class="mcc-form-row">
           <label>Project Name</label>
           <input id="f-pname" class="form-input" placeholder="e.g. Plant A MCC-1" />
         </div>
 
-        <div class="mcc-form-section-label">MCC_LAYOUT coordinates</div>
+        <div class="mcc-form-section-label" style="display:flex;align-items:center;gap:6px">
+          Drawing Assignment
+          <button class="btn-sm" id="f-np-refresh" title="Refresh list of open drawings" style="padding:1px 6px;font-size:0.7rem">↻ Refresh</button>
+        </div>
+        ${noDrawingsHint}
+        <div id="f-dwg-assign-rows"></div>
+
+        <div class="mcc-form-section-label">Layout sheet coordinates</div>
         <div class="mcc-form-row">
           <label>First Section Origin X</label>
           <input id="f-ox" class="form-input" value="95" type="number" step="0.5" />
@@ -1174,10 +1244,9 @@
           <input id="f-fuy" class="form-input" value="224" type="number" step="0.5" />
         </div>
 
-        <div class="mcc-form-section-label">MCC_UNITDATA coordinates</div>
+        <div class="mcc-form-section-label">Unit data sheet coordinates</div>
         <p class="mcc-form-hint" style="font-size:0.7rem">
           In AutoCAD, hover over the first empty UDATALIN row to get these coordinates.
-          Rows will be inserted here and advance downward by 4 units each.
         </p>
         <div class="mcc-form-row">
           <label>First Row X</label>
@@ -1195,17 +1264,38 @@
         <div class="mcc-form-result" id="f-np-res"></div>
       </div>
     `);
+
+    // Populate drawing dropdowns
+    const assignRows = document.getElementById('f-dwg-assign-rows');
+    _renderDwgAssign(assignRows, drawings);
+
+    // Refresh button re-fetches open drawings without closing the panel
+    document.getElementById('f-np-refresh').addEventListener('click', async () => {
+      try {
+        const r = await exec('list_open_drawings', {});
+        if (r.success) {
+          drawings = r.drawings || [];
+          _renderDwgAssign(assignRows, drawings);
+        }
+      } catch (_) {}
+    });
+
     document.getElementById('f-np-cancel').addEventListener('click', hideRp);
     document.getElementById('f-np-ok').addEventListener('click', doNewProject);
   }
 
   async function doNewProject() {
+    const errEl = document.getElementById('f-np-res');
     const pname = (document.getElementById('f-pname')?.value ?? '').trim();
     const ox  = parseFloat(document.getElementById('f-ox')?.value  ?? '95');
     const oy  = parseFloat(document.getElementById('f-oy')?.value  ?? '120');
     const fuy = parseFloat(document.getElementById('f-fuy')?.value ?? '224');
     const udx = parseFloat(document.getElementById('f-udx')?.value ?? '20');
     const udy = parseFloat(document.getElementById('f-udy')?.value ?? '230');
+
+    const dwg_map = _collectDwgMap(errEl);
+    if (!dwg_map) return;   // validation error already shown
+
     setBusy(true);
     try {
       const res = await exec('new_mcc_project', {
@@ -1215,6 +1305,7 @@
         unitdata_row_x:   udx,
         unitdata_row_y:   udy,
         project_name:     pname,
+        dwg_map,
       });
       if (res.success) {
         _projectId = res.project_id;
@@ -1225,13 +1316,91 @@
         const label = _projectName !== res.project_id ? `"${_projectName}" (${res.project_id})` : res.project_id;
         setStatus(`Project ${label} ready. Add a section to start.`);
       } else {
-        const el = document.getElementById('f-np-res');
-        if (el) { el.className = 'mcc-form-result mcc-err'; el.textContent = _friendlyError(res.error); }
+        if (errEl) { errEl.className = 'mcc-form-result mcc-err'; errEl.textContent = _friendlyError(res.error); }
       }
     } catch (e) {
-      const el = document.getElementById('f-np-res');
-      if (el) { el.className = 'mcc-form-result mcc-err'; el.textContent = _friendlyError(e.message); }
+      if (errEl) { errEl.className = 'mcc-form-result mcc-err'; errEl.textContent = _friendlyError(e.message); }
     } finally { setBusy(false); }
+  }
+
+  // ── Reassign Drawings dialog ───────────────────────────────────────────────
+  async function promptReassignDrawings() {
+    if (!_projectId) { setStatus('No active project — create or load one first.', true); return; }
+
+    // Fetch current map + open drawings in parallel
+    let drawings = [];
+    let currentMap = {};
+    try {
+      const [drawRes, stateRes] = await Promise.all([
+        exec('list_open_drawings', {}),
+        exec('list_projects', {}),
+      ]);
+      if (drawRes.success) drawings = drawRes.drawings || [];
+      // Pull the dwg_map from the active project in the list
+      if (stateRes.success) {
+        const proj = (stateRes.projects || []).find(p => p.project_id === _projectId);
+        if (proj) currentMap = proj.dwg_map || {};
+      }
+    } catch (_) {}
+
+    showRp('Reassign Drawings', `
+      <div class="mcc-form">
+        <p class="mcc-form-hint">
+          Select which drawing currently open in AutoCAD corresponds to each sheet.
+          Click ↻ Refresh if you just opened a drawing.
+        </p>
+
+        <div class="mcc-form-section-label" style="display:flex;align-items:center;gap:6px">
+          Drawing Assignment
+          <button class="btn-sm" id="f-ra-refresh" style="padding:1px 6px;font-size:0.7rem">↻ Refresh</button>
+        </div>
+        <div id="f-ra-assign-rows"></div>
+
+        <div class="mcc-form-actions">
+          <button class="btn-primary" id="f-ra-ok">Save Assignments</button>
+          <button class="btn-sm"      id="f-ra-cancel">Cancel</button>
+        </div>
+        <div class="mcc-form-result" id="f-ra-res"></div>
+      </div>
+    `);
+
+    const assignRows = document.getElementById('f-ra-assign-rows');
+    _renderDwgAssign(assignRows, drawings, currentMap);
+
+    document.getElementById('f-ra-refresh').addEventListener('click', async () => {
+      try {
+        const r = await exec('list_open_drawings', {});
+        if (r.success) { drawings = r.drawings || []; _renderDwgAssign(assignRows, drawings, currentMap); }
+      } catch (_) {}
+    });
+
+    document.getElementById('f-ra-cancel').addEventListener('click', hideRp);
+    document.getElementById('f-ra-ok').addEventListener('click', async () => {
+      const errEl = document.getElementById('f-ra-res');
+      const map   = _collectDwgMap(errEl);
+      if (!map) return;
+
+      setBusy(true);
+      try {
+        // Reassign each role sequentially
+        const roles = ['layout', 'unitdata', 'nameplate', 'general_data'];
+        for (const role of roles) {
+          const res = await exec('reassign_drawing', {
+            project_id: _projectId,
+            role,
+            dwg_name: map[role],
+          });
+          if (!res.success) {
+            if (errEl) { errEl.className = 'mcc-form-result mcc-err'; errEl.textContent = `${role}: ${_friendlyError(res.error)}`; }
+            return;
+          }
+        }
+        hideRp();
+        setStatus(`Drawing assignments updated for project "${_projectName || _projectId}".`);
+      } catch (e) {
+        if (errEl) { errEl.className = 'mcc-form-result mcc-err'; errEl.textContent = _friendlyError(e.message); }
+      } finally { setBusy(false); }
+    });
   }
 
   // ── Save / load project ────────────────────────────────────────────────────
@@ -1651,7 +1820,7 @@
     let currentChecked = new Set();
     try {
       setBusy(true);
-      const res = await exec('get_general_data');
+      const res = await exec('get_general_data', { project_id: _projectId ?? undefined });
       if (res.success === false) {
         document.getElementById('gd-hint').className = 'mcc-form-result mcc-err';
         document.getElementById('gd-hint').textContent = '✗ ' + (res.error ?? 'Failed to read General Data block.');
@@ -1721,6 +1890,7 @@
         const res = await exec('set_general_data', {
           fields:     Object.keys(fields).length     ? fields     : null,
           checkboxes: checkboxes,
+          project_id: _projectId ?? undefined,
         });
         if (res.success) {
           resEl.className = 'mcc-form-result mcc-ok';
@@ -1731,6 +1901,188 @@
         } else {
           resEl.className = 'mcc-form-result mcc-err';
           resEl.textContent = '✗ ' + _friendlyError(res.error ?? 'Write failed.');
+        }
+      } catch (e) {
+        resEl.className = 'mcc-form-result mcc-err';
+        resEl.textContent = '✗ ' + _friendlyError(e.message);
+      } finally { setBusy(false); }
+    });
+  }
+
+  // ── Title Block form ───────────────────────────────────────────────────────
+  // Field definitions: [key, label, placeholder]
+  const TB_FIELDS = [
+    ['DATE',         'Date Drawn',           'e.g. 08.19.26'],
+    ['CUSTOMER_1',   'Customer (line 1)',     'Company name'],
+    ['CUSTOMER_2',   'Customer (line 2)',     'e.g. division / address'],
+    ['ORDER_NO',     'Order No.',             'e.g. N/A'],
+    ['BY',           'Drawn By',              'Initials'],
+    ['DRAWING_NO',   'Drawing No.',           'e.g. 8PX3-SAMPLE-U001'],
+    ['PROJECT_1',    'Title (line 1)',        'e.g. MCC UNIT DATA'],
+    ['PROJECT_2',    'Title (line 2)',        'e.g. SAMPLE MCC'],
+    ['REV_NO',       'Current Rev.',          'e.g. A'],
+  ];
+  const TB_REV_ROWS = [
+    { prefix: 'REV_A', label: 'Rev A' },
+    { prefix: 'REV_B', label: 'Rev B' },
+    { prefix: 'REV_C', label: 'Rev C' },
+  ];
+
+  async function openTitleblockForm() {
+    if (!_projectId) { setStatus('No active project — create or load one first.', true); return; }
+
+    const tbRow = ([key, label, ph]) =>
+      `<div class="mcc-form-row">
+         <label>${label}</label>
+         <input id="tb-${key}" class="form-input" placeholder="${ph}" />
+       </div>`;
+
+    const revSection = TB_REV_ROWS.map(({ prefix, label }) => `
+      <div class="mcc-form-row" style="align-items:flex-start">
+        <label style="padding-top:4px">${label}</label>
+        <div style="flex:1;display:grid;grid-template-columns:1fr 1fr 1fr 60px;gap:4px">
+          <input id="tb-${prefix}_DESC"   class="form-input" placeholder="Description" />
+          <input id="tb-${prefix}_BY"     class="form-input" placeholder="By" />
+          <input id="tb-${prefix}_DATE"   class="form-input" placeholder="Date" />
+          <input id="tb-${prefix}_LETTER" class="form-input" placeholder="Ltr" />
+        </div>
+      </div>`).join('');
+
+    showRp('Title Block', `
+      <div class="mcc-form">
+        <p class="mcc-form-hint">
+          Edit the <b>TITLE3</b> block. Check which drawings to apply changes to,
+          then click "Read from AutoCAD" to load current values, edit, and "Write to AutoCAD".
+        </p>
+
+        <div class="mcc-form-section-label">Apply to drawings</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+          <label style="display:flex;align-items:center;gap:4px;font-size:0.8rem">
+            <input type="checkbox" id="tb-tgt-layout"       checked /> Layout
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;font-size:0.8rem">
+            <input type="checkbox" id="tb-tgt-unitdata"     checked /> Unit Data
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;font-size:0.8rem">
+            <input type="checkbox" id="tb-tgt-nameplate"    checked /> Nameplate
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;font-size:0.8rem">
+            <input type="checkbox" id="tb-tgt-general_data"        /> General Data
+          </label>
+        </div>
+
+        <div class="mcc-form-section-label">Fields</div>
+        ${TB_FIELDS.map(tbRow).join('')}
+
+        <div class="mcc-form-section-label">
+          Revision History
+          <span style="font-size:0.65rem;font-weight:normal;margin-left:6px;opacity:.7">
+            Desc · By · Date · Letter
+          </span>
+        </div>
+        ${revSection}
+
+        <div class="mcc-form-actions" style="flex-wrap:wrap;gap:6px">
+          <button class="btn-sm"      id="tb-read">↓ Read from AutoCAD</button>
+          <button class="btn-primary" id="tb-write">↑ Write to AutoCAD</button>
+          <button class="btn-sm"      id="tb-cancel">Cancel</button>
+        </div>
+        <p class="mcc-form-hint" style="font-size:0.65rem;margin-top:6px">
+          ⚠ Attribute index order is approximate. Run
+          <code>python scripts/dump_title3.py</code> to verify exact indices if
+          values appear in wrong fields.
+        </p>
+        <div class="mcc-form-result" id="tb-res"></div>
+      </div>
+    `);
+
+    document.getElementById('tb-cancel').addEventListener('click', hideRp);
+
+    // Helper: collect all field values into a fields dict
+    function collectTbFields() {
+      const fields = {};
+      for (const [key] of TB_FIELDS) {
+        const v = document.getElementById(`tb-${key}`)?.value ?? '';
+        if (v) fields[key] = v;
+      }
+      for (const { prefix } of TB_REV_ROWS) {
+        for (const suf of ['DESC', 'BY', 'DATE', 'LETTER']) {
+          const v = document.getElementById(`tb-${prefix}_${suf}`)?.value ?? '';
+          if (v) fields[`${prefix}_${suf}`] = v;
+        }
+      }
+      return fields;
+    }
+
+    // Helper: populate form from fields dict
+    function populateTbFields(fields) {
+      for (const [key] of TB_FIELDS) {
+        const el = document.getElementById(`tb-${key}`);
+        if (el) el.value = fields[key] ?? '';
+      }
+      for (const { prefix } of TB_REV_ROWS) {
+        for (const suf of ['DESC', 'BY', 'DATE', 'LETTER']) {
+          const el = document.getElementById(`tb-${prefix}_${suf}`);
+          if (el) el.value = fields[`${prefix}_${suf}`] ?? '';
+        }
+      }
+    }
+
+    // Collect target roles from checkboxes
+    function collectTargets() {
+      return ['layout', 'unitdata', 'nameplate', 'general_data']
+        .filter(r => document.getElementById(`tb-tgt-${r}`)?.checked);
+    }
+
+    // Read button — load current values from the first checked drawing
+    document.getElementById('tb-read').addEventListener('click', async () => {
+      const resEl = document.getElementById('tb-res');
+      const targets = collectTargets();
+      const readRole = targets[0] ?? 'layout';
+      setBusy(true);
+      try {
+        const res = await exec('get_titleblock', { project_id: _projectId, role: readRole });
+        if (res.success) {
+          populateTbFields(res.fields);
+          resEl.className = 'mcc-form-result mcc-ok';
+          resEl.textContent = `✓ Loaded from ${res.doc}`;
+        } else {
+          resEl.className = 'mcc-form-result mcc-err';
+          resEl.textContent = '✗ ' + _friendlyError(res.error);
+        }
+      } catch (e) {
+        resEl.className = 'mcc-form-result mcc-err';
+        resEl.textContent = '✗ ' + _friendlyError(e.message);
+      } finally { setBusy(false); }
+    });
+
+    // Write button
+    document.getElementById('tb-write').addEventListener('click', async () => {
+      const resEl  = document.getElementById('tb-res');
+      const fields  = collectTbFields();
+      const targets = collectTargets();
+      if (!targets.length) {
+        resEl.className = 'mcc-form-result mcc-err';
+        resEl.textContent = 'Select at least one drawing to apply changes to.';
+        return;
+      }
+      if (!Object.keys(fields).length) {
+        resEl.className = 'mcc-form-result mcc-err';
+        resEl.textContent = 'No fields to write — fill in at least one value.';
+        return;
+      }
+      setBusy(true);
+      try {
+        const res = await exec('set_titleblock', { fields, project_id: _projectId, targets });
+        if (res.success) {
+          resEl.className = 'mcc-form-result mcc-ok';
+          const updated = (res.updated ?? []).join(', ');
+          const skipped = (res.skipped ?? []).join('; ');
+          resEl.textContent = `✓ Updated: ${updated || '—'}` + (skipped ? `  |  Skipped: ${skipped}` : '');
+        } else {
+          resEl.className = 'mcc-form-result mcc-err';
+          const errs = (res.errors ?? []).join('; ') || res.error || 'Write failed.';
+          resEl.textContent = '✗ ' + _friendlyError(errs);
         }
       } catch (e) {
         resEl.className = 'mcc-form-result mcc-err';
@@ -1750,12 +2102,16 @@
             ?.addEventListener('click', openBulkAddForm);
     document.getElementById('btn-general-data')
             ?.addEventListener('click', openGeneralDataForm);
+    document.getElementById('btn-titleblock')
+            ?.addEventListener('click', openTitleblockForm);
     document.getElementById('btn-refresh-mcc')
             ?.addEventListener('click', refreshState);
     document.getElementById('btn-save-mcc')
             ?.addEventListener('click', doSaveProject);
     document.getElementById('btn-load-mcc')
             ?.addEventListener('click', promptLoadProject);
+    document.getElementById('btn-reassign-dwg')
+            ?.addEventListener('click', promptReassignDrawings);
 
     // Project selector
     document.getElementById('mcc-project-select')?.addEventListener('change', async e => {

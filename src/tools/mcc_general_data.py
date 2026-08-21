@@ -400,6 +400,43 @@ def _get_doc(acad, name_fragment: str):
     )
 
 
+def _get_doc_by_name(acad, filename: str):
+    """Exact filename lookup (case-insensitive base name)."""
+    import os
+    target = os.path.basename(filename).upper()
+    for i in range(acad.Documents.Count):
+        try:
+            d = acad.Documents.Item(i)
+            if os.path.basename(d.Name).upper() == target:
+                return d
+        except Exception:
+            continue
+    raise RuntimeError(
+        f"'{filename}' is not open in AutoCAD. "
+        f"Please open it or use Reassign Drawings to update the mapping."
+    )
+
+
+def _resolve_general_data_doc(acad, project_id: str | None):
+    """Return the general-data document.
+
+    If ``project_id`` is given and the project's dwg_map has a 'general_data'
+    entry, use exact-name lookup.  Otherwise fall back to the DOC_FRAGMENT
+    substring search (legacy / no-project behaviour).
+    """
+    if project_id:
+        try:
+            from src.tools.mcc_layout import _projects
+            proj = _projects.get(project_id)
+            if proj:
+                gd_name = (proj.get("dwg_map") or {}).get("general_data", "")
+                if gd_name:
+                    return _get_doc_by_name(acad, gd_name)
+        except Exception:
+            pass
+    return _get_doc(acad, DOC_FRAGMENT)
+
+
 def _get_block_ref(doc, block_name: str):
     """Find the first insertion of block_name in model space via HandleToObject."""
     ms = doc.ModelSpace
@@ -561,9 +598,16 @@ def _find_checked_boxes(doc) -> set[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def get_general_data() -> dict[str, Any]:
+def get_general_data(project_id: str | None = None) -> dict[str, Any]:
     """
-    Read the current state of the GENRA001B block in General_Data Sheet.dwg.
+    Read the current state of the GENRA001B block in the General Data drawing.
+
+    Parameters
+    ----------
+    project_id : str | None
+        If provided, uses the drawing assigned as 'general_data' in the project's
+        dwg_map (exact name match).  If omitted, falls back to substring search
+        for DOC_FRAGMENT (legacy behaviour).
 
     Returns a dict with:
       "fields"       : {attdef_name: current_value, ...}  (all 46 attributes)
@@ -571,7 +615,7 @@ def get_general_data() -> dict[str, Any]:
     """
     try:
         acad = _get_autocad()
-        doc  = _get_doc(acad, DOC_FRAGMENT)
+        doc  = _resolve_general_data_doc(acad, project_id)
         ref  = _get_block_ref(doc, BLOCK_NAME)
 
         # ── Read attributes ───────────────────────────────────────────────
@@ -601,6 +645,7 @@ def get_general_data() -> dict[str, Any]:
 def set_general_data(
     fields:     dict[str, str] | None = None,
     checkboxes: list[str]      | None = None,
+    project_id: str | None            = None,
 ) -> dict[str, Any]:
     """
     Write fields and/or checkboxes to the GENRA001B block.
@@ -613,6 +658,9 @@ def set_general_data(
         The COMPLETE desired checked state.  Any box in this list that is
         currently unchecked will be checked; any box NOT in this list that is
         currently checked will be unchecked.
+    project_id : str | None
+        If provided, uses the drawing assigned as 'general_data' in the project's
+        dwg_map.  If omitted, falls back to DOC_FRAGMENT substring search.
     """
     import time
 
@@ -623,7 +671,7 @@ def set_general_data(
 
     try:
         acad = _get_autocad()
-        doc  = _get_doc(acad, DOC_FRAGMENT)
+        doc  = _resolve_general_data_doc(acad, project_id)
         ref  = _get_block_ref(doc, BLOCK_NAME)
 
         # ── Phase 0: wait for AutoCAD to be idle before touching anything ──

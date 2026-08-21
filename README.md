@@ -3,31 +3,38 @@
 > Local web dashboard for **AutoCAD Electrical 2027** - control AutoCAD with plain language using Claude, Ollama or any OpenAI compatible models. Comes with a motor control center (MCC) configurator panel to edit or create complete MCC drawing packages.
 
 > This app is designed for **Electrical Controls Manufacturing** (ECM), aimed at adding support for their Motor Control Center (MCC) products, as well as planned future support for
-variable frequency drives (VFDs), soft starters, breaker panels, and other products. The MCC configurator **will not work** unless MCC_LAYOUT, MCC_UNITDATA, and MCC_NAMEPLATE.dwg are open in AutoCAD, and the required CAD blocks are located in the filepath written in .env. Additionally, the general data configurator panel **will not work** unless the 'General_Data Sheet.dwg' file is open and contains the 'GENRA001B' block. The original repo used for this project is available at https://github.com/Igualguana/AUTOCAD-ELECTRICAL-MCP.
+variable frequency drives (VFDs), soft starters, breaker panels, and other products. The MCC configurator requires a layout sheet, unit data sheet, and nameplate sheet to be open in AutoCAD — the drawings can have any filename. Additionally, the general data configurator panel requires a drawing containing the `GENRA001B` block to be open. The original repo used for this project is available at https://github.com/Igualguana/AUTOCAD-ELECTRICAL-MCP.
 
 ---
 
 ## MCC Configurator Setup
 
-The MCC Builder requires three template drawings to be open in AutoCAD before you start a project. These are the files the tool writes into — they must come from your company's block library.
+The MCC Builder requires four template drawings to be open in AutoCAD before you start a project. These are the files the tool writes into — they must come from your company's block library.
 
-| File | Purpose |
-|------|---------|
-| `MCC_LAYOUT.dwg` | Receives section frames and unit blocks |
-| `MCC_UNITDATA.dwg` | Receives `UDATALIN` data rows |
-| `MCC_NAMEPLATE.dwg` | Receives `LAMACOID` nameplate rows |
-| `General_Data Sheet.dwg` | (Optional) Receives `GENRA001B` data rows |
+| Role | Default name | Purpose |
+|------|-------------|---------|
+| Layout sheet | e.g. `MCC_LAYOUT.dwg` | Receives section frames and unit blocks |
+| Unit data sheet | e.g. `MCC_UNITDATA.dwg` | Receives `UDATALIN` data rows |
+| Nameplate sheet | e.g. `MCC_NAMEPLATE.dwg` | Receives `LAMACOID` nameplate rows |
+| General data sheet | e.g. `General_Data Sheet.dwg` | (Optional) Receives `GENRA001B` data |
+
+> **Drawings can have any filename.** When you click **New Project**, the configurator
+> fetches all drawings currently open in AutoCAD and presents four dropdowns so you can
+> assign each role to the correct file — even if it is named something like
+> `8PX3-A9390-S001.dwg`. The assignment is saved with the project and can be updated
+> at any time via the **Reassign DWGs** toolbar button.
 
 **Steps:**
 
-1. Set `MCC_BLOCK_LIBRARY` in your `.env` to the folder containing these files (and all unit block DWGs).
-2. Open `MCC_LAYOUT.dwg`, `MCC_UNITDATA.dwg`, and `MCC_NAMEPLATE.dwg` in AutoCAD Electrical.
-3. (Optional) Open `General_Data Sheet.dwg` in AutoCAD Electrical.
+1. Set `MCC_BLOCK_LIBRARY` in your `.env` to the folder containing your unit block DWGs.
+2. Open your layout, unit data, and nameplate drawings in AutoCAD Electrical.
+3. (Optional) Open your general data drawing in AutoCAD Electrical.
 4. Start the web server: `python start_web.py`
 5. Open `http://127.0.0.1:8080` and click **MCC** in the sidebar.
-6. Click **New Project** — the tool will connect to the three open drawings automatically.
+6. Click **New Project**, assign each drawing role in the dropdowns, and click **Create Project**.
 
-> If you see *"MCC_LAYOUT.dwg is not open"* when creating a project, go back to step 2 and make sure the required files are open in AutoCAD before clicking New Project.
+> If a drawing is missing from the dropdowns, switch back to AutoCAD and open it, then
+> click ↻ **Refresh** in the New Project form without closing it.
 
 ---
 

@@ -5,6 +5,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.8.0] — Drawing Assignment & Bug Fixes (August 19, 2026)
+
+### Added
+- **Drawing assignment mapping (`dwg_map`)** — projects no longer require drawings
+  to be named `MCC_LAYOUT.dwg`, `MCC_UNITDATA.dwg`, etc.  When creating a new
+  project the form fetches all drawings currently open in AutoCAD and shows four
+  dropdowns (Layout, Unit data, Nameplate, General data) so the user can map each
+  role to the actual filename (e.g. `8PX3-A9390-S001.dwg`).
+  - A ↻ Refresh button re-fetches the open drawing list without closing the form.
+  - The `dwg_map` is stored in the in-memory project and persisted to the project
+    JSON so it survives save/load cycles.
+- **`list_open_drawings()`** (`mcc_layout.py`) — new public tool that returns the
+  `name` and `full_path` of every drawing open in AutoCAD's Documents collection.
+  Registered in `chat.py` TOOL_REGISTRY.
+- **`_get_doc_by_name(acad, filename)`** (`mcc_layout.py`) — exact base-name lookup
+  (case-insensitive) used in place of substring search when a `dwg_map` entry is
+  present.  Old projects without a `dwg_map` fall back to the legacy substring
+  search automatically.
+- **`reassign_drawing(project_id, role, dwg_name)`** (`mcc_layout.py`) — updates
+  a single role's document binding for an existing in-memory project and reconnects
+  the COM reference.  Registered in `chat.py` TOOL_REGISTRY.
+- **"Reassign DWGs" toolbar button** — opens a panel with the same four dropdowns
+  pre-populated with the current assignments; saving calls `reassign_drawing` for
+  each role.
+- **`load_project` uses `dwg_map` for reconnection** — when loading a saved project,
+  exact-name lookup is used for each role instead of hardcoded fragment strings.
+- **`list_projects` now returns `dwg_map`** — so the Reassign panel can pre-populate
+  current assignments without an extra API call.
+- **`get_general_data` / `set_general_data` accept `project_id`** — if provided,
+  the general-data drawing is resolved via the project's `dwg_map["general_data"]`
+  entry (exact-name lookup).  Falls back to `DOC_FRAGMENT` substring search when
+  no `project_id` is supplied (legacy/standalone behaviour).
+
+### Fixed
+- **Unit number inserted into "NO" (normally open contacts) field for VFD/custom
+  units** — `_collectDetailFields` used element ID suffix `'uno'`, which collided
+  with the unit-number input field (`f-uno`/`e-uno`).  Changed to `'ucr-no'`
+  throughout: the `_collectDetailFields` map, the form template row, the
+  `clearForm` ID list, and the edit pre-fill map.
+
+---
+
 ## [0.7.0] — General Data Block Support (August 11, 2026)
 
 ### Added

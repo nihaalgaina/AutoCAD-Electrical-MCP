@@ -26,7 +26,7 @@ from src.config import get_config
 from src.providers import get_provider
 from src.tools import drawing, drawing3d, electrical, wires, components, reports
 from src.tools import project as proj
-from src.tools import mcc_layout, mcc_blocks, mcc_general_data
+from src.tools import mcc_layout, mcc_blocks, mcc_general_data, mcc_titleblock
 from web.backend.state import add_log, add_history
 
 # Re-use the single COM worker thread from app (imported lazily to avoid
@@ -443,6 +443,22 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
         "params": {"project_id": "str"},
         "category": "MCC",
     },
+    "list_open_drawings": {
+        "func": mcc_layout.list_open_drawings,
+        "description": "Return the names and full paths of every drawing currently open in AutoCAD. Use this to populate the drawing assignment dropdowns when creating or reassigning project drawings.",
+        "params": {},
+        "category": "MCC",
+    },
+    "reassign_drawing": {
+        "func": mcc_layout.reassign_drawing,
+        "description": "Reassign a drawing role (layout/unitdata/nameplate/general_data) for an existing project to a different open drawing. Use when the drawing filename doesn't match what was saved.",
+        "params": {
+            "project_id": "str",
+            "role":       "str — one of: layout, unitdata, nameplate, general_data",
+            "dwg_name":   "str — filename as shown in AutoCAD, e.g. '8PX3-A9390-S001.dwg'",
+        },
+        "category": "MCC",
+    },
     "list_projects": {
         "func": mcc_layout.list_projects,
         "description": "List all active in-memory MCC projects with section and unit counts.",
@@ -512,6 +528,25 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "with their block-local bounding-box coordinates. Useful for discovery."
         ),
         "params": {},
+        "category": "MCC",
+    },
+    "get_titleblock": {
+        "func": mcc_titleblock.get_titleblock,
+        "description": "Read the TITLE3 titleblock attributes from one drawing in the project.",
+        "params": {
+            "project_id": "str",
+            "role":       "str — layout | unitdata | nameplate | general_data (default: layout)",
+        },
+        "category": "MCC",
+    },
+    "set_titleblock": {
+        "func": mcc_titleblock.set_titleblock,
+        "description": "Write TITLE3 titleblock fields to one or more drawings. targets is a list of roles to update.",
+        "params": {
+            "fields":     "dict — {logical_key: value}",
+            "project_id": "str",
+            "targets":    "list[str] — e.g. ['layout','unitdata','nameplate']",
+        },
         "category": "MCC",
     },
     # ── Project ─────────────────────────────────────────────────────────

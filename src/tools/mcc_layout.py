@@ -70,6 +70,35 @@ def _get_autocad():
         )
 
 
+def _get_doc_by_name(acad, filename: str):
+    """Return an open document by exact filename (case-insensitive).
+
+    ``filename`` should be just the base name as returned by doc.Name
+    (e.g. ``"8PX3-A9390-S001.dwg"``).  Strips any directory component
+    before comparing so full paths work too.
+    """
+    import os
+    target = os.path.basename(filename).upper()
+    docs = acad.Documents
+    try:
+        count = docs.Count
+    except Exception:
+        count = 0
+
+    for i in range(count):
+        try:
+            doc = docs.Item(i)
+            if os.path.basename(doc.Name).upper() == target:
+                return doc
+        except Exception:
+            continue
+
+    raise RuntimeError(
+        f"'{filename}' is not open in AutoCAD. "
+        f"Please open it and try again, or use Reassign Drawings to update the mapping."
+    )
+
+
 def _get_doc(acad, name_fragment: str):
     """Return an open document by partial name match (case-insensitive).
 
@@ -313,6 +342,41 @@ def _get_bounding_box(ref) -> tuple[float, float]:
 # Public tools
 # ---------------------------------------------------------------------------
 
+def list_open_drawings() -> dict[str, Any]:
+    """Return the names and full paths of every drawing currently open in AutoCAD.
+
+    Returns
+    -------
+    dict with ``success`` and ``drawings`` (list of ``{name, full_path}`` dicts).
+    """
+    import os
+    try:
+        acad = _get_autocad()
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "drawings": []}
+
+    drawings: list[dict[str, str]] = []
+    docs = acad.Documents
+    try:
+        count = docs.Count
+    except Exception:
+        count = 0
+
+    for i in range(count):
+        try:
+            doc = docs.Item(i)
+            name = doc.Name          # e.g. "MCC_LAYOUT.dwg"
+            try:
+                full_path = doc.FullName  # e.g. "C:\\Project\\MCC_LAYOUT.dwg"
+            except Exception:
+                full_path = name
+            drawings.append({"name": name, "full_path": full_path})
+        except Exception:
+            continue
+
+    return {"success": True, "drawings": drawings}
+
+
 def new_mcc_project(
     layout_origin_x: float = 95.0,
     layout_origin_y: float = 120.0,
@@ -322,33 +386,61 @@ def new_mcc_project(
     nameplate_row_x: float = 25.0,
     nameplate_row_y: float = 235.0,
     project_name: str = "",
+    dwg_map: dict | None = None,
 ) -> dict[str, Any]:
-    """Start a new MCC project.  MCC_LAYOUT, MCC_UNITDATA and MCC_NAMEPLATE must be open.
+    """Start a new MCC project.
 
     Parameters
     ----------
     layout_origin_x/y : float
-        Insertion point for the first section frame in MCC_LAYOUT.
+        Insertion point for the first section frame in the layout drawing.
     first_unit_y : float
         Y coordinate for the first unit slot inside every section (default 224.0).
     unitdata_row_x/y : float
-        World coordinates for the first UDATALIN row in MCC_UNITDATA.
+        World coordinates for the first UDATALIN row in the unitdata drawing.
     nameplate_row_x/y : float
-        World coordinates for the first LAMACOID row in MCC_NAMEPLATE.
+        World coordinates for the first LAMACOID row in the nameplate drawing.
     project_name : str
         Human-readable name for the project (used as the default save filename).
+    dwg_map : dict | None
+        Maps roles to the *actual* filename of the open drawing.  Keys:
+        ``layout``, ``unitdata``, ``nameplate``, ``general_data``.
+        If omitted, falls back to substring search for MCC_LAYOUT /
+        MCC_UNITDATA / MCC_NAMEPLATE (legacy behaviour).
+        Example::
+
+            {
+                "layout":       "8PX3-A9390-S001.dwg",
+                "unitdata":     "8PX3-A9390-S003.dwg",
+                "nameplate":    "8PX3-A9390-S004.dwg",
+                "general_data": "8PX3-A9390-S002.dwg",
+            }
     """
     try:
-        acad           = _get_autocad()
-        layout_doc     = _get_doc(acad, "MCC_LAYOUT")
-        unitdata_doc   = _get_doc(acad, "MCC_UNITDATA")
-        nameplate_doc  = _get_doc(acad, "MCC_NAMEPLATE")
+        acad = _get_autocad()
+        if dwg_map:
+            layout_doc    = _get_doc_by_name(acad, dwg_map["layout"])
+            unitdata_doc  = _get_doc_by_name(acad, dwg_map["unitdata"])
+            nameplate_doc = _get_doc_by_name(acad, dwg_map["nameplate"])
+        else:
+            layout_doc    = _get_doc(acad, "MCC_LAYOUT")
+            unitdata_doc  = _get_doc(acad, "MCC_UNITDATA")
+            nameplate_doc = _get_doc(acad, "MCC_NAMEPLATE")
     except Exception as exc:
         return {"success": False, "error": str(exc)}
+
+    # Normalise dwg_map to always use actual doc.Name values
+    resolved_map: dict[str, str] = {
+        "layout":       layout_doc.Name,
+        "unitdata":     unitdata_doc.Name,
+        "nameplate":    nameplate_doc.Name,
+        "general_data": (dwg_map or {}).get("general_data", ""),
+    }
 
     project_id = str(uuid.uuid4())[:8]
     _projects[project_id] = {
         "project_name":            project_name.strip(),
+        "dwg_map":                 resolved_map,
         "layout_doc":              layout_doc,
         "unitdata_doc":            unitdata_doc,
         "nameplate_doc":           nameplate_doc,
@@ -372,9 +464,70 @@ def new_mcc_project(
         "success":         True,
         "project_id":      project_id,
         "project_name":    project_name.strip(),
+        "dwg_map":         resolved_map,
         "layout_doc":      layout_doc.Name,
         "unitdata_doc":    unitdata_doc.Name,
         "nameplate_doc":   nameplate_doc.Name,
+    }
+
+
+def reassign_drawing(
+    project_id: str,
+    role: str,
+    dwg_name: str,
+) -> dict[str, Any]:
+    """Reassign a drawing role for an existing project.
+
+    Use this when a drawing was opened under a different filename than the one
+    recorded in the project, or when you want to swap a drawing mid-session.
+
+    Parameters
+    ----------
+    project_id : str
+        The active project to update.
+    role : str
+        One of ``"layout"``, ``"unitdata"``, ``"nameplate"``, ``"general_data"``.
+    dwg_name : str
+        The filename (as shown in AutoCAD's title bar) of the drawing to assign,
+        e.g. ``"8PX3-A9390-S002.dwg"``.
+
+    Returns
+    -------
+    dict with ``success``, ``role``, ``dwg_name`` on success or ``error``.
+    """
+    VALID_ROLES = {"layout", "unitdata", "nameplate", "general_data"}
+    if role not in VALID_ROLES:
+        return {"success": False, "error": f"role must be one of {sorted(VALID_ROLES)}"}
+
+    proj = _projects.get(project_id)
+    if proj is None:
+        return {"success": False, "error": f"Unknown project_id: {project_id}"}
+
+    try:
+        acad = _get_autocad()
+        doc  = _get_doc_by_name(acad, dwg_name)
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+    # Update the dwg_map record
+    if "dwg_map" not in proj:
+        proj["dwg_map"] = {}
+    proj["dwg_map"][role] = doc.Name
+
+    # Reconnect the COM reference for the appropriate slot
+    if role == "layout":
+        proj["layout_doc"] = doc
+    elif role == "unitdata":
+        proj["unitdata_doc"] = doc
+    elif role == "nameplate":
+        proj["nameplate_doc"] = doc
+    # general_data has no COM slot in the project dict — it's looked up on demand
+
+    return {
+        "success":  True,
+        "role":     role,
+        "dwg_name": doc.Name,
+        "dwg_map":  proj["dwg_map"],
     }
 
 
@@ -2285,6 +2438,7 @@ def list_projects() -> dict[str, Any]:
             {
                 "project_id":     pid,
                 "project_name":   p.get("project_name", ""),
+                "dwg_map":        p.get("dwg_map", {}),
                 "total_sections": len(p["sections"]),
                 "total_units":    len(p["unit_index"]),
             }
@@ -2390,6 +2544,7 @@ def save_project(
     data: dict[str, Any] = {
         "project_id":       project_id,
         "project_name":     proj.get("project_name", ""),
+        "dwg_map":          proj.get("dwg_map", {}),
         "saved_at":         datetime.now(timezone.utc).isoformat(),
         "layout_origin_x":  proj["section_cursor_x"] - sum(
             s["width_units"] for s in proj["sections"].values()
@@ -2464,20 +2619,33 @@ def load_project(
     layout_doc    = None
     unitdata_doc  = None
     nameplate_doc = None
+    dwg_map: dict[str, str] = data.get("dwg_map") or {}
 
     if reconnect:
         try:
-            acad          = _get_autocad()
-            layout_doc    = _get_doc(acad, "MCC_LAYOUT")
-            unitdata_doc  = _get_doc(acad, "MCC_UNITDATA")
-            nameplate_doc = _get_doc(acad, "MCC_NAMEPLATE")
-        except Exception as exc:
+            acad = _get_autocad()
+            # Prefer exact-name lookup from saved dwg_map; fall back to
+            # legacy substring search if the map is absent (old projects).
+            if dwg_map.get("layout"):
+                layout_doc   = _get_doc_by_name(acad, dwg_map["layout"])
+            else:
+                layout_doc   = _get_doc(acad, "MCC_LAYOUT")
+            if dwg_map.get("unitdata"):
+                unitdata_doc = _get_doc_by_name(acad, dwg_map["unitdata"])
+            else:
+                unitdata_doc = _get_doc(acad, "MCC_UNITDATA")
+            if dwg_map.get("nameplate"):
+                nameplate_doc = _get_doc_by_name(acad, dwg_map["nameplate"])
+            else:
+                nameplate_doc = _get_doc(acad, "MCC_NAMEPLATE")
+        except Exception:
             # Non-fatal — project loads in offline mode
             reconnect = False
 
     # Rebuild the in-memory project dict
     proj: dict[str, Any] = {
         "project_name":            data.get("project_name", ""),
+        "dwg_map":                 dwg_map,
         "layout_doc":              layout_doc,
         "unitdata_doc":            unitdata_doc,
         "nameplate_doc":           nameplate_doc,
@@ -2512,6 +2680,7 @@ def load_project(
         "success":      True,
         "project_id":   project_id,
         "project_name": proj.get("project_name", ""),
+        "dwg_map":      proj.get("dwg_map", {}),
         "reconnected":  reconnect,
         "sections":     list(proj["sections"].keys()),
         "units":        list(proj["unit_index"].keys()),
